@@ -20,6 +20,9 @@ recorded sizes and SHA-256 hashes. The manifest and check log describe that
 original snapshot. The publication checks also parsed the 13 Python placeholders
 and package metadata, and both PBS templates passed `bash -n`.
 
+The `prompts/` directory is now ignored by Git. All 11 local prompt files were
+checked byte for byte after removing them from the Git index.
+
 ## Phase status
 
 | Phase | Scope | Status |
