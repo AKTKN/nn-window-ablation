@@ -4,7 +4,7 @@ Design version: 2026-11-22. Status: proposed specification, prior to implementat
 
 ## 1. Scope and status
 
-This document specifies the planned organization of the simulator, decoder adaptation, and experiment pipeline. The repository name is `nn-window-ablation`, the Python import name is `nn_window_ablation`, and the proposed command-line entry point is `nnwa`. The source scaffold contains docstring-only implementation placeholders. It does not register an `nnwa` entry point before P0, implement a simulator, or establish a validated environment. All commands below are future interfaces; no experiment or cluster job has been executed.
+This document specifies the planned organization of the simulator, decoder adaptation, and experiment pipeline. The repository name is `nn-window-ablation`, the Python import name is `nn_window_ablation`, and the command-line entry point is `nnwa`. P0 provides configuration validation in the installed package. See the [implementation status](../IMPLEMENTATION_STATUS.md) for executed checks and pending scientific and cluster work.
 
 The initial repository should support one scientific comparison: a model trained with complete, closed syndrome histories is evaluated on finite open windows, and its performance is compared with the same architecture trained with the intended window context. The primary model has one query-conditioned scalar head for both global and core targets. The same offline checkpoint $\theta_F$ defines G (one global query on full history), F (XOR of all core queries on full history), and S (XOR of the same core queries on their windows). An unmodified upstream Lange model may be retained as a separate reproduction reference; it is not G. The repository should record these inference choices without introducing separate primary global/core heads or a general decoder framework.
 
@@ -12,7 +12,7 @@ The initial execution path is Linux, Python 3.11, Conda, and CPU simulation, pre
 
 ## 2. Package structure and responsibilities
 
-Use one installable Python package with a `src` layout and one `pyproject.toml`. PyPA documents that the `src` layout separates importable application code from the repository root and requires an installation step, typically an editable installation during development. This is useful here because scripts, notebooks, and cluster jobs should import the same installed package rather than depend on the directory from which they were launched. P0 will implement the CLI and add its entry point under `[project.scripts]`; the scaffold does not advertise an executable command before that work exists. [1, 2]
+Use one installable Python package with a `src` layout and one `pyproject.toml`. PyPA documents that the `src` layout separates importable application code from the repository root and requires an installation step, typically an editable installation during development. This lets scripts, notebooks, and cluster jobs import the same installed package from any invocation directory. The P0 entry point is declared in `[project.scripts]`. [1, 2]
 
 The proposed separation of source, datasets, run artifacts, and analysis follows common research-project conventions exemplified by Cookiecutter Data Science. The QEC-specific organization follows the Lange repository's separation of circuits, shot sources, graph features, models, training, and experiment scripts; Sinter additionally illustrates separating sampling/decoding from persistent Monte Carlo statistics. These are organizational references, not additional runtime dependencies. [6, 34, 37]
 
@@ -192,7 +192,7 @@ Configuration groups should correspond to actual experimental choices. The follo
 The proposed `conf/config.yaml` is:
 
 ```yaml
-# Proposed Hydra interface; no executable consumer exists before P0.
+# Hydra task configuration.
 defaults:
   - code: surface_rotated_z
   - noise: uniform_circuit
@@ -259,7 +259,7 @@ Continuation `training.max_steps` counts new phase-local updates, excluding the 
 
 The statistical condition identifier combines checkpoint provenance with inference mode. In particular, `evaluation.id=S` applied to full, continued-full, fixed-window, and dynamic-window checkpoints denotes S, S+, W, and D, respectively. Record both the inference mode and immutable checkpoint training regime; the caller's current training preset cannot relabel an existing checkpoint.
 
-The following commands illustrate the future CLI after P0 and the corresponding scientific phases are implemented. They are not executable capabilities of the scaffold. They assume an active Conda environment, completed storage checks, and validated numerical budgets in the pilot configuration. `pilot_d5` is the default experiment. Artifact paths and dataset identifiers are illustrative.
+The first command uses P0's validation workflow. The scientific commands illustrate interfaces for later phases. They assume an active Conda environment, completed storage checks, and validated numerical budgets in the pilot configuration. `pilot_d5` is the default experiment. Artifact paths and dataset identifiers are illustrative.
 
 ```bash
 nnwa validate experiment=pilot_d5 runtime=local_cpu

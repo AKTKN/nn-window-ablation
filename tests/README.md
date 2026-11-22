@@ -25,11 +25,18 @@ the test path or adding `-k`. Each worker initializes Torch intra-op and inter-o
 parallelism to one before collecting tests. The session controller coordinates
 workers. [pytest-xdist worker behavior](https://pytest-xdist.readthedocs.io/en/stable/how-to.html)
 
-When P0 adds the CLI, ordinary subprocess tests should call it synchronously
+Ordinary CLI subprocess tests call the installed command synchronously
 with `runtime=test_cpu`, `runtime.processes=1`, `data.num_workers=0`, and
 `data.sampling_processes=1`. For allocations smaller than eight, also set
 `runtime.allocated_cpus` to the actual allocation. The parent worker waits for
 its child without starting a second pytest pool.
+
+The P0 integration fixture builds one wheel using the active environment's
+setuptools and wheel. It uses a lock to install the wheel once into a temporary
+virtual environment with access to the Conda dependency set. Each CLI test
+starts from its own invocation directory with `PYTHONPATH` removed. The import
+check also verifies that Python loads the installed wheel inside the temporary
+environment.
 
 Run tests marked `performance` after the ordinary suite with `-n 1` and
 `-m "performance and not cluster"`. When comparing thread settings, start a

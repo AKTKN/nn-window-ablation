@@ -1,1 +1,1 @@
-"""Preimplementation package skeleton for the neural window-decoding study."""
+"""Neural surface-code window-decoding study."""

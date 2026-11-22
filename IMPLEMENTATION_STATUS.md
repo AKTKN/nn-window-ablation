@@ -1,13 +1,12 @@
 # Implementation status
 
-Last updated 2026-11-23. The shared verification infrastructure is in place.
+Last updated 2026-11-23. P0 is implemented and verified locally.
 
 ## Delivered structure
 
-The repository contains English scientific/design documents, docstring-only
-Python module placeholders, Hydra YAML examples, package/dependency declarations,
-and PBS examples. `nnwa` has no registered console entry point. No upstream model
-source has been vendored.
+The repository provides the installed `nnwa validate` workflow, typed
+configuration, packaged Hydra presets, and CPU runtime checks. Scientific
+modules and PBS orchestration await their implementation phases.
 
 ## GitHub publication
 
@@ -27,7 +26,7 @@ checked byte for byte after removing them from the Git index.
 
 | Phase | Scope | Status |
 |---|---|---|
-| P0 | Packaging, CLI, typed configuration, validated CPU environment | Shared test setup and test CPU profile verified locally. CLI, typed configuration, and compute-node validation pending. |
+| P0 | Packaging, CLI, typed configuration, validated CPU environment | Implemented and verified locally. Compute-node validation pending. |
 | P1 | Physical circuit, clean cuts, exact global/core labels | Not implemented. |
 | P2 | Observation windows and features without future leakage | Not implemented. |
 | P3 | Lange model adapter, shared queries, CPU profile | Not implemented. |
@@ -42,6 +41,18 @@ not a required training stage or the pilot.
 
 ## Validation record
 
+### P0
+
+The local C0 checks passed with 61 focused and 65 cumulative tests, with zero
+failures or skips. The installed wheel resolved the pilot from outside the
+checkout and recorded both children of a Hydra sweep. Invalid configurations
+and run-name collisions were rejected without publishing new run records.
+A fresh Conda environment recreated from the local inventories passed
+`pip check`, dependency imports, and the wheel CLI check. The exact commands,
+environment, and per-claim evidence are recorded in [P0.md](docs/verification/P0.md).
+
+### Original scaffold
+
 The original scaffold was subject only to static checks of Python syntax and
 docstring-only contents, TOML/YAML parsing, configuration-group file references,
 local Markdown links, shell syntax of PBS examples, and archive integrity.
@@ -52,7 +63,7 @@ The companion `scaffold_checks.json` records that original snapshot.
 The test suite uses `pytest-xdist`, a thread bootstrap before worker collection,
 and a packaged `runtime=test_cpu` profile. The shared tests run from the working
 tree based on `0b78262`. The [assurance case](docs/verification/assurance_case.md)
-tracks the pending P0–P7 claims and their prerequisites.
+tracks the claims and their prerequisites.
 
 The local Conda environment `nn-window-ablation` was created from `environment.yml`
 with Conda 24.9.2 on Linux x86-64 under WSL2. It used Python 3.11.18, pip 26.2.2,
@@ -88,10 +99,10 @@ Both reported zero failures and skips. The test IDs are in
 | `test_incompatible_interop_setup_fails_in_fresh_process` | A synchronous child with inter-op threads already set to two fails explicitly when the bootstrap requests one. |
 | `test_packaged_test_cpu_profile_composes_with_pilot` | Hydra composition matches the independently specified CPU settings and the pilot's distance, noise probability, model width, and GRU depth. |
 
-These local checks establish the test setup. Installed CLI validation, scientific
-acceptance tests, and allocated compute-node checks remain pending.
+These checks established the shared test setup before P0. Scientific
+acceptance tests and allocated compute-node checks remain pending.
 
-## Decisions retained for P0 and the pilot
+## Decisions retained for the pilot
 
 Resolve the cluster queue/account policy, permitted walltime, actual CPU topology,
 and compute-node visibility of repository/environment/data paths. Choose the

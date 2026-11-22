@@ -3,6 +3,7 @@
 import os
 
 import pytest
+from hydra import compose, initialize_config_module
 from xdist import is_xdist_controller
 
 from ._cpu import configure_torch_threads
@@ -24,3 +25,13 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         os.environ[name] = "1"
 
     configure_torch_threads()
+
+
+@pytest.fixture
+def compose_settings():
+    """Compose the installed defaults with an explicit, reproducible run name."""
+    with initialize_config_module(config_module="nn_window_ablation.conf", version_base="1.3"):
+        def settings(*overrides: str):
+            return compose(config_name="config", overrides=["run_name=p0-unit", *overrides])
+
+        yield settings

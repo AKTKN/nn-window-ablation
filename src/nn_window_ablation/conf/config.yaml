@@ -1,4 +1,3 @@
-# Proposed Hydra interface; no executable consumer exists before P0.
 defaults:
   - code: surface_rotated_z
   - noise: uniform_circuit
@@ -14,7 +13,7 @@ defaults:
 
 schema_version: 1
 seed: 101
-# P0 CLI assigns a UUID-based name when the user does not supply one.
+# The CLI supplies a UUID-based name when the caller omits it.
 run_name: ???
 paths:
   data_root: ${oc.env:NNWA_DATA_ROOT,./data}

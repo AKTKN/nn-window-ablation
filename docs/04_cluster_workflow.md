@@ -12,7 +12,7 @@ This document specifies a proposed workflow. No remote session, environment inst
 
 Develop and review the source locally, then publish an approved version to GitHub. On the cluster, clone the repository and check out the exact commit selected for the experiment. Record the commit in every run. Keep the checkout unchanged while its jobs are queued or running, because batch jobs can start after submission and read the files then present on disk.
 
-The local scaffold uses `environment.yml` for the Conda base environment, PBS templates under `scripts/pbs/*.pbs.example`, and `src/nn_window_ablation/conf/runtime/cpu.yaml` for the CPU profile. These files contain environment and orchestration settings; simulation, training, and analysis remain in the Python package. The scaffold does not register an `nnwa` entry point before CLI implementation. Large datasets and results belong under explicitly configured storage roots.
+The repository uses `environment.yml` for the Conda base environment, PBS templates under `scripts/pbs/*.pbs.example`, and `src/nn_window_ablation/conf/runtime/cpu.yaml` for the CPU profile. P0 provides `nnwa validate` for inspecting the resolved settings. Commands that run scientific workflows become available in later phases. Large datasets and results belong under explicitly configured storage roots.
 
 Use the login node for editing, environment preparation where site policy permits, submission, and result transfer. Perform the $d=5$ execution checks and training benchmark in an approved compute allocation. The login node's CPU count is not the resource budget for a scheduled job.
 

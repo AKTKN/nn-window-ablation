@@ -1,6 +1,6 @@
 # nn-window-ablation
 
-Preimplementation scaffold for a neural surface-code decoder study. The project
+Repository for a neural surface-code decoder study. The project
 compares complete, closed syndrome-history inference with finite-window inference
 and then measures the effect of training with the deployment context. The model
 uses the modular Lange GNN–RNN backbone with a study-specific, shared global/core
@@ -10,12 +10,9 @@ reference for that construction [3].
 
 ## Current state
 
-This repository contains English design documents, configuration examples,
-dependency declarations, and PBS script templates.
-The scientific source modules are placeholders. A shared test bootstrap covers
-CPU thread limits and the test configuration profile. The simulator, decoder
-adapter, training pipeline, CLI, scientific tests, and export workflow await
-their implementation phases. `nnwa` is the planned command name for P0.
+P0 provides an installed `nnwa validate` command, typed configuration, and
+local CPU verification. The simulator, decoder adapter, training pipeline,
+scientific tests, and export workflow await their implementation phases.
 
 See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for phase status and
 [AGENTS.md](AGENTS.md) for development contracts.
@@ -72,18 +69,25 @@ resources and 350 GB of memory. CPU execution is the initial profile. Neither
 physical-core topology nor GPU availability on all nodes is inferred from the
 login-node report.
 
-## Next implementation step
+## Validate a configuration
 
-Use P0 in the phase document as the first implementation contract. The user will
-prepare the individual implementation and test prompts. P0 establishes packaging,
-configuration validation, and the CPU environment; P1–P6 add the scientific
-pipeline. A minimal PBS launcher is brought forward for the first P3 cluster
-profile, and P7 consolidates campaign execution and artifact export.
+Set up the [Conda environment](environments/README.md), then run the installed
+command from the directory where you want relative paths to resolve.
 
-Keep the source revision fixed for queued/running jobs. The scientific package
-does not yet have an executable quick start. After P0, the intended command verbs
-are `nnwa validate`, `generate`, `train`, `evaluate`, and `analyze`. Commands shown
-in the design documents are future interface examples, not completed features.
+```bash
+conda run -n nn-window-ablation nnwa validate runtime=local_cpu
+conda run -n nn-window-ablation nnwa validate --multirun \
+  experiment=pilot_d5,paired_d7 runtime=local_cpu window.right_per_distance=0.5
+```
+
+Validation writes `resolved_config.yaml`, `overrides.yaml`, and `metadata.yaml`
+for each accepted configuration. The default run root is `./runs`. Set
+`NNWA_RUN_ROOT` or `paths.run_root` to change it. See the
+[configuration reference](src/nn_window_ablation/conf/README.md) for run names,
+paths, and CPU allocation.
+
+`generate`, `train`, `evaluate`, and `analyze` report the implementation phase
+they require. P1 starts with the [circuit and label contract](docs/05_implementation_phases.md#p1-physical-circuits-exact-labels-and-clean-cuts).
 
 ## References
 

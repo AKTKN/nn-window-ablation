@@ -1,9 +1,9 @@
 # Configuration examples
 
-These YAML files specify the Hydra 1.3 interface. The shared tests compose the
-test CPU profile. P0 will implement application composition, typed validation,
-and the `nnwa` entry point. Root `_self_` precedes `experiment`, and experiment
-files use `# @package _global_`, so an experiment overrides the composed groups [1].
+The installed `nnwa` entry point composes these YAML files with Hydra 1.3.
+Root `_self_` precedes `experiment`, and experiment files use
+`# @package _global_`, so an experiment overrides the composed groups. Explicit
+CLI field overrides apply after the experiment [1].
 
 | Group | Initial choice | Purpose |
 |---|---|---|
@@ -18,23 +18,26 @@ files use `# @package _global_`, so an experiment overrides the composed groups 
 | `runtime` | `cpu` | CPU threads/processes independent of scientific conditions. |
 | `experiment` | `pilot_d5` | Initial distance-5 pilot; `paired_d5/paired_d7` are later presets. |
 
-The future typed resolver computes $T=12d$, $c=d$,
+`config.resolve_config` returns a typed `ResolvedConfig` with the configured
+groups and a `geometry` record. The resolver computes
+$T=d\,\mathtt{rounds\_per\_distance}$, $c=d$,
 $b_L=\lceil d\,\mathtt{left\_per\_distance}\rceil$, and the analogous $b_R$.
-It saves both ratios and resolved integers. OmegaConf interpolations are used for
-field references and environment variables, not unimplemented arithmetic
-expressions [2]. At the default pilot these lengths are $T=60,c=b_L=b_R=5$.
+The saved configuration includes the input ratios, derived integers, nominal
+width, and core count. At the default pilot these are
+$T=60,c=b_L=b_R=5,W=15,J=12$. OmegaConf resolves field references and
+environment variables before the typed resolver checks the values [2].
 
 `training.initialization=random` applies to the initial full-context model.
 Continuation groups require a full study checkpoint through
-`checkpoint.init_from`; no model layer is reinitialized. `checkpoint.path`
-selects a model for evaluation, and `checkpoint.resume_from` denotes continuation
-of the same interrupted run, including optimizer and data-stream state.
+`checkpoint.init_from`. `checkpoint.path` selects a model for evaluation.
+`checkpoint.resume_from` is reserved for continuing the same interrupted run
+with its restored optimizer and data stream in P4. `init_from` and
+`resume_from` are mutually exclusive.
 
 `training.max_steps`, `training.batch_size`, `training.learning_rate`, optimizer
 and scheduler choices, and data sizes remain null until the pilot choices are
-made. Null means unresolved, not zero, unlimited, or permission to choose a hidden
-default. P0 validation can inspect an incomplete design but must reject an
-execution requiring an unresolved value. Later implementations must document
+made. `validate` accepts unresolved budgets for inspection. Workflow readiness
+requires explicit values for the fields each command uses. Later implementations must document
 explicit choices such as a deliberately disabled scheduler.
 
 The CPU profile's 16 intra-operation threads are an initial benchmark candidate,
@@ -45,19 +48,38 @@ thread. `test_cpu` declares one application process, one intra-operation thread,
 one inter-operation thread, and an eight-CPU allocation cap for local tests.
 Thread settings are independent of distance and model dimensions.
 
-Set `NNWA_DATA_ROOT` and `NNWA_RUN_ROOT` for cluster storage. Their fallback paths
-are `./data` and `./runs`; P0 must resolve them to absolute paths before I/O.
-`hydra.job.chdir=false` avoids implicitly relocating relative paths [3]. Hydra
-multirun enumerates configurations; its basic launcher does not submit PBS jobs
-or infer checkpoint dependencies [4]. Use a fixed checkout while jobs are queued
-or running.
+For numerical startup, provide `runtime.allocated_cpus` explicitly. The CPU
+budget charges each application process for the intra-op count times the
+inter-op count, plus one CPU for each loader worker and each parallel sampler
+worker. A single sampler runs inline. `runtime.configure_cpu_runtime` checks
+the declaration and process affinity before applying native and PyTorch thread
+settings. `validate` records the plan without starting numerical execution.
 
-The future CLI assigns a UUID-based `run_name` before invoking Hydra when none
-is supplied. The YAML marks it mandatory, and both Hydra output directories use
-it. Explicit names must be unique for new runs; an interrupted run is resumed
-only through the recorded resume contract. Directory creation must not silently
-reuse an unrelated run. A multirun receives a unique parent name and Hydra job
-numbers distinguish its children.
+Set `NNWA_DATA_ROOT` and `NNWA_RUN_ROOT` or override their `paths.*` fields.
+The fallback paths are `./data` and `./runs`. Storage and checkpoint paths are
+resolved against the invocation directory before publishing records.
+Hydra's working directory stays at the invocation directory [3].
+
+The CLI supplies a UUID-based `run_name` before invoking Hydra when none is
+given. An explicit name may contain ASCII letters, digits, dots, underscores,
+and hyphens, must begin with a letter or digit, and must be at most 128
+characters with no trailing dot. The command reserves a new name exclusively.
+To inspect resume settings, use a new validation run name and the
+`checkpoint.resume_from` path. P4 will check the saved run identity when
+restoring state.
+
+Hydra's basic launcher composes each sweep child in a temporary directory.
+Records are published after the sweep passes validation, with one directory
+per child under `<run_root>/<run_name>/hydra_sweep/<job-number>`. A single run
+writes to `<run_root>/<run_name>/hydra`. Sweep children share the parent
+`run_name` and `paths.run_root`. Place Hydra options such as `--multirun` before
+the overrides [4].
+
+`metadata.yaml` records the installed package versions, CPU identity, affinity,
+configured allocation and worker counts, and source provenance. For a wheel
+whose installer does not record a Git revision, supply `NNWA_SOURCE_REVISION`
+from the source revision that built the wheel. A detached wheel without that
+information reports the revision as unavailable.
 
 For continuation presets, `training.max_steps` is the number $U_1$ of new updates
 in that phase. Record parent, phase-local, and cumulative update counts

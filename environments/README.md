@@ -31,6 +31,26 @@ The login node's environment alone is insufficient evidence of compute-node
 compatibility. If local development uses a different platform, retain separate
 platform-resolved environment records while keeping scientific settings fixed.
 
+## Recreate the locally verified Linux environment
+
+The [Conda explicit file](local-linux-64.conda.txt) records the local Linux
+x86-64 builds. The [pip inventory](local-linux-64.pip.txt) pins the added
+packages, including the CPU PyTorch build.
+
+```bash
+conda create -n nnwa-local-check --file environments/local-linux-64.conda.txt
+conda activate nnwa-local-check
+python -m pip install --constraint environments/local-linux-64.pip.txt \
+  'torch==2.7.0+cpu' --index-url https://download.pytorch.org/whl/cpu
+python -m pip install --no-deps -r environments/local-linux-64.pip.txt
+python -m pip install --no-deps --no-build-isolation -e .
+python -m pip check
+```
+
+This inventory describes P0's local verification. Record a distinct inventory
+after validating on an allocated compute node. See the
+[P0 evidence record](../docs/verification/P0.md).
+
 ## Environment records after validation
 
 Save the resolved configuration and the actual Conda and pip inventories inside
