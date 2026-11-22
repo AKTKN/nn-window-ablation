@@ -1,0 +1,7 @@
+id: S
+query: all_cores
+context: deployment_window
+aggregation: xor
+threshold: 0.5
+reset_recurrent_state_per_query: true
+update_model_state: false

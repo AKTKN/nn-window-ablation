@@ -1,0 +1,7 @@
+strategy: independent_core_parity
+core_per_distance: 1
+left_per_distance: 1
+right_per_distance: 1
+reset_recurrent_state: true
+final_readout_policy: final_core_only
+crop_before_features: true

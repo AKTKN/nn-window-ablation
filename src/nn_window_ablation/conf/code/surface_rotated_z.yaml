@@ -1,0 +1,5 @@
+family: surface_code
+layout: rotated
+memory_basis: Z
+distance: 5
+rounds_per_distance: 12

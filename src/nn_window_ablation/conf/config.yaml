@@ -1,0 +1,33 @@
+# Proposed Hydra interface; no executable consumer exists before P0.
+defaults:
+  - code: surface_rotated_z
+  - noise: uniform_circuit
+  - window: fixed_d
+  - model: query_gnn_rnn
+  - training: full_closed
+  - data: paired
+  - evaluation: G
+  - analysis: primary
+  - runtime: cpu
+  - _self_
+  - experiment: pilot_d5
+
+schema_version: 1
+seed: 101
+# P0 CLI assigns a UUID-based name when the user does not supply one.
+run_name: ???
+paths:
+  data_root: ${oc.env:NNWA_DATA_ROOT,./data}
+  run_root: ${oc.env:NNWA_RUN_ROOT,./runs}
+checkpoint:
+  path: null
+  init_from: null
+  resume_from: null
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ${paths.run_root}/${run_name}/hydra
+  sweep:
+    dir: ${paths.run_root}/${run_name}/hydra_sweep
+    subdir: ${hydra.job.num}

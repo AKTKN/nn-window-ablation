@@ -1,0 +1,7 @@
+id: F
+query: all_cores
+context: full_closed
+aggregation: xor
+threshold: 0.5
+reset_recurrent_state_per_query: true
+update_model_state: false

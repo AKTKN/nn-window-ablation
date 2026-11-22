@@ -1,0 +1,68 @@
+{
+  "checked_at_utc": "2026-11-22T14:22:39.475608+00:00",
+  "scope": "Preimplementation static scaffold checks only",
+  "checks": [
+    {
+      "name": "python_syntax_and_docstring_only",
+      "status": "passed",
+      "items": 13,
+      "detail": "AST parsing; no simulator or CLI functions present."
+    },
+    {
+      "name": "toml_metadata",
+      "status": "passed",
+      "items": 1,
+      "detail": "TOML parsed; no console entry point is advertised."
+    },
+    {
+      "name": "yaml_syntax",
+      "status": "passed",
+      "items": 20,
+      "detail": "Parsed with PyYAML; no Hydra composition was executed."
+    },
+    {
+      "name": "configuration_group_references",
+      "status": "passed",
+      "items": 10,
+      "detail": "Every default group file exists; global experiment order and unique run-name paths are declared."
+    },
+    {
+      "name": "declared_scientific_presets",
+      "status": "passed",
+      "items": 1,
+      "detail": "Static arithmetic/schema cross-check only: d5/T60/c5/b5/W15/p0.003, width256/GRU4, CPU, and paired continuation phases."
+    },
+    {
+      "name": "inference_preset_fields",
+      "status": "passed",
+      "items": 3,
+      "detail": "Inference declarations are present; no decoder predictions were computed."
+    },
+    {
+      "name": "markdown_structure_references_and_links",
+      "status": "passed",
+      "items": 13,
+      "detail": "English Markdown; URL references in every file; 13 relative links exist; code/math delimiters balanced."
+    },
+    {
+      "name": "pbs_template_shell_syntax",
+      "status": "passed",
+      "items": 2,
+      "detail": "bash -n only; neither scheduler directives nor commands were executed."
+    },
+    {
+      "name": "scope_and_artifact_state",
+      "status": "passed",
+      "items": 1,
+      "detail": "No model checkpoint, generated dataset, Git initialization, or environment lock is included."
+    }
+  ],
+  "not_executed": [
+    "Hydra composition or application dispatch",
+    "scientific dependency installation/resolution",
+    "package build or fresh-environment installation",
+    "pytest or scientific invariant tests",
+    "circuit sampling, neural inference, training, or statistical experiment",
+    "remote cluster access, PBS submission, or GitHub publication"
+  ]
+}

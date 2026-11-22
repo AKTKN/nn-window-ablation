@@ -1,0 +1,7 @@
+id: G
+query: global
+context: full_closed
+aggregation: identity
+threshold: 0.5
+reset_recurrent_state_per_query: true
+update_model_state: false

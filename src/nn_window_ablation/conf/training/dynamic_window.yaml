@@ -1,0 +1,23 @@
+name: dynamic_window
+initialization: full_checkpoint
+global_context: full_closed
+core_context: sampled_window
+core_loss_weight: 1.0
+loss_normalization: one_plus_core_loss_weight
+sampled_cores_per_trajectory: 1
+core_sampling: uniform
+data_stream_phase: continuation
+# Additional updates in this phase; a parent checkpoint step is not included.
+max_steps: null
+batch_size: null
+learning_rate: null
+optimizer: null
+scheduler: null
+# New phase only; resume restores the saved optimizer instead.
+reset_optimizer_at_start: true
+checkpoint_policy: fixed_updates
+dynamic_buffers:
+  enabled: true
+  ratios: [0.0, 0.5, 1.0]
+  distribution: independent_uniform
+  sampling_unit: minibatch

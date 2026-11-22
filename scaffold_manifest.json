@@ -1,0 +1,265 @@
+{
+  "scope": "Preimplementation scaffold",
+  "files": [
+    {
+      "path": ".gitattributes",
+      "bytes": 124,
+      "sha256": "032f6922a323cc48feb6065302f48347bcd88b72cb5714eeb1b8772edbb3b219"
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 206,
+      "sha256": "6a2d9e55bc9d9e49d1a92df28a64efda1cddac1106920b8c33e72cd4b04114eb"
+    },
+    {
+      "path": "AGENTS.md",
+      "bytes": 3060,
+      "sha256": "8242d865a340dc707499c23caaa254a308ed0e8ba77a8f5492bdf7af89a64c43"
+    },
+    {
+      "path": "IMPLEMENTATION_STATUS.md",
+      "bytes": 2724,
+      "sha256": "d145d3e297d1c736577db96bffcffcbc96cbdc0fb518ba76efb6703cbefdf7b6"
+    },
+    {
+      "path": "README.md",
+      "bytes": 5803,
+      "sha256": "b726a42037ffe35168f630dea3d82bfe771b51f9bee081288a6310735b0cf999"
+    },
+    {
+      "path": "docs/01_theory_and_decoder.md",
+      "bytes": 27284,
+      "sha256": "658b1c5f6e88c4f8e78f79b085db9f81c75c230681bca76204ed6677c412c72a"
+    },
+    {
+      "path": "docs/02_ablation_protocol.md",
+      "bytes": 34947,
+      "sha256": "1996112a8f4cf957a3675c4216cd174710580adc6118e3eba7b5c692b1d5f439"
+    },
+    {
+      "path": "docs/03_repository_design.md",
+      "bytes": 44871,
+      "sha256": "7251b1676f9aa95d7850871a6d5d4126c737e0575a203b09e68efd7faefe8174"
+    },
+    {
+      "path": "docs/04_cluster_workflow.md",
+      "bytes": 12730,
+      "sha256": "edc4f443413cc6e60d4821501b481686029ca25d04a9e03836324710676ae654"
+    },
+    {
+      "path": "docs/05_implementation_phases.md",
+      "bytes": 23740,
+      "sha256": "1caf5561755e20b3360fba6e480048a374e2141318004738db3358bd2fa478c2"
+    },
+    {
+      "path": "environment.yml",
+      "bytes": 169,
+      "sha256": "9938aea3d90d40f855cd0cfc4dd23521dd6880aae9a44e938a88a273d98f2811"
+    },
+    {
+      "path": "environments/README.md",
+      "bytes": 3580,
+      "sha256": "088ff425b5cf572cc87cd74c6c9436bfce076d2812959df236e0cd845bf3f9ff"
+    },
+    {
+      "path": "pyproject.toml",
+      "bytes": 933,
+      "sha256": "455059853b6075dfa061142644f0489a9ea33fcb6c42f1328c3c59e330f5ddee"
+    },
+    {
+      "path": "scaffold_checks.json",
+      "bytes": 2291,
+      "sha256": "dc500a7a109511545dec81d828bd1d2051a8f255fa6f9b095bc8af907b8447ea"
+    },
+    {
+      "path": "scripts/README.md",
+      "bytes": 3339,
+      "sha256": "06ac3c794d4c3830f1be586ffb2b37188a996badc44fba5a0ea480b2c137f4a8"
+    },
+    {
+      "path": "scripts/pbs/pilot.pbs.example",
+      "bytes": 2032,
+      "sha256": "63bf0a647b2ae17d94b53667801846a125e443538c4e4f27c8db5da6b10ec609"
+    },
+    {
+      "path": "scripts/pbs/probe.pbs.example",
+      "bytes": 1136,
+      "sha256": "f89743de60533428550f4cff7ffbd50789f333aabab3b695e2a55bbdd5795f90"
+    },
+    {
+      "path": "src/nn_window_ablation/__init__.py",
+      "bytes": 79,
+      "sha256": "a5beb74112eea85df532ae274a3a842abd49f41497961e708187a173b593e1d9"
+    },
+    {
+      "path": "src/nn_window_ablation/analysis.py",
+      "bytes": 99,
+      "sha256": "ef166939b6822da13c589a1619a625367b7e4ccdca9f926b9f5b7108046bc3eb"
+    },
+    {
+      "path": "src/nn_window_ablation/cli.py",
+      "bytes": 94,
+      "sha256": "a80c5fb8d7ff32eeaf998871f9292b94fa0c4072a8755601d026a31f8b571428"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/README.md",
+      "bytes": 5391,
+      "sha256": "8cf1b824c10f03ba3d8cf85c2f4fcab496b4003d13583215e33aeb04089d6ce3"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/analysis/primary.yaml",
+      "bytes": 328,
+      "sha256": "b7296eb28f6b9e0ae9cd45b9f1bad472dce194823cab44f0cd7203d249bf83b7"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/code/surface_rotated_z.yaml",
+      "bytes": 89,
+      "sha256": "4acdf0571bd682e231e6d833a7cc21173356884c2dcbc5ebfba746067e32d44c"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/config.yaml",
+      "bytes": 758,
+      "sha256": "5781b9cae3f0c2f3501f724c39323600219d339e64649708905e7b7d441249a5"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/data/paired.yaml",
+      "bytes": 276,
+      "sha256": "aa75bcee69a75bcc080b0170792116bbf10ddc04f9dacde79c68ec440df10a3f"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/evaluation/F.yaml",
+      "bytes": 140,
+      "sha256": "d4e24a732347253237cc4bd47de5cb1895c7b9834da2866cd29c3ab13fe826c9"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/evaluation/G.yaml",
+      "bytes": 142,
+      "sha256": "1c51578c5148e4b70d41c9dde1b06c6449b748f6173b0b550a0833716a8e6fb4"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/evaluation/S.yaml",
+      "bytes": 146,
+      "sha256": "c2de289436f3687f4d05c03c75129ba951797678a8fc0513b74072c499da925a"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/experiment/paired_d5.yaml",
+      "bytes": 219,
+      "sha256": "f99f6ebe98882518aa3d3e78a6d86bbbecbe7b658353ec51b3cc76540c7748b6"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/experiment/paired_d7.yaml",
+      "bytes": 219,
+      "sha256": "7d82843d9920e758f3a8f58e6a1eb5a96d871a306a4bf06fb84f9d4fe95c279b"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/experiment/pilot_d5.yaml",
+      "bytes": 219,
+      "sha256": "5ec43be9ab062785d9fe5c012270de98e9f614bb3e0a6ccd621c88567c9f85bb"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/model/query_gnn_rnn.yaml",
+      "bytes": 292,
+      "sha256": "fc9f08fc7577de77021c5ae5b96f0aef10cdbf3706156f9f96048d07c3754afa"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/noise/uniform_circuit.yaml",
+      "bytes": 253,
+      "sha256": "67b803c879fbcfa42bd07988a8a995fb8d3181d33fa26e9467450b0c5715eea8"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/runtime/cpu.yaml",
+      "bytes": 142,
+      "sha256": "b3ac373168dee808d8a791ee9155357587efb34b55e1ad68d28189d32ad51520"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/runtime/local_cpu.yaml",
+      "bytes": 122,
+      "sha256": "2af01175979abff87590f499abb95dabf44775b78cd5347307c81c93a58f9288"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/training/continued_full.yaml",
+      "bytes": 675,
+      "sha256": "879cfe15b07c46e572692c7db4dfc687487ea964c386a915e447ef60aafe590b"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/training/dynamic_window.yaml",
+      "bytes": 677,
+      "sha256": "154c6e4f084f4e61c3c21cd4cb82d0862ac1bdf21b03ad6c603bdb7cb954d1c2"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/training/fixed_window.yaml",
+      "bytes": 679,
+      "sha256": "4e0bf1bd212f28c24aef702c46b1f11ffcb3c93d65abbd9bcf369aa2d53101bc"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/training/full_closed.yaml",
+      "bytes": 655,
+      "sha256": "4e38b9084ccc103f2dd226d050cccc844126694e2d76c845c583ea08450a9db8"
+    },
+    {
+      "path": "src/nn_window_ablation/conf/window/fixed_d.yaml",
+      "bytes": 191,
+      "sha256": "1dc87fa1fb1190b5b62d759c61c21193effea3e6e72e1c6010905c5b8f5925a7"
+    },
+    {
+      "path": "src/nn_window_ablation/config.py",
+      "bytes": 102,
+      "sha256": "ee264d2b8138df94f6afa7cdd47c47787c745b81033c9e64db3e9c10b82ec7e3"
+    },
+    {
+      "path": "src/nn_window_ablation/data.py",
+      "bytes": 101,
+      "sha256": "11481cf896a7cff4edb48bf15750201e74d6956e020b9500a00394144d5cc361"
+    },
+    {
+      "path": "src/nn_window_ablation/evaluation.py",
+      "bytes": 97,
+      "sha256": "6612dc43f466127a25652b5b4e572fd9fae641a3f0eeeb51bb30b9ef2e146edb"
+    },
+    {
+      "path": "src/nn_window_ablation/features.py",
+      "bytes": 101,
+      "sha256": "e9d77ab8f7b96d91bd5be9df72da79e8784ea577b0a7c5a9b36b17388ea5646b"
+    },
+    {
+      "path": "src/nn_window_ablation/models/__init__.py",
+      "bytes": 70,
+      "sha256": "e51323f58d0b49a94b78b903aab9dfa34a92040ff478f1b4de98ef1d6c8c1591"
+    },
+    {
+      "path": "src/nn_window_ablation/models/gnn_rnn.py",
+      "bytes": 92,
+      "sha256": "aefc41d4ae64d8414cf79790271999488ae2a1ada5f66cba6cbb174fbc51b09f"
+    },
+    {
+      "path": "src/nn_window_ablation/simulation.py",
+      "bytes": 102,
+      "sha256": "509731607d4702b4a56b80a7d3ac7422db6fb279e2b07eb89d7b9adb5a1e4ee3"
+    },
+    {
+      "path": "src/nn_window_ablation/training.py",
+      "bytes": 102,
+      "sha256": "f4e6e8d530fc99bd6698fa6e9f388355c5604f1cce7314372e538447d502e187"
+    },
+    {
+      "path": "src/nn_window_ablation/windows.py",
+      "bytes": 96,
+      "sha256": "44a5696821dac79dfe9a25bcc3aad593fae8d2176e24d17da3097baf93f73cfe"
+    },
+    {
+      "path": "src/nn_window_ablation/workflows.py",
+      "bytes": 82,
+      "sha256": "fa2ede43a5fe1e714ccb1e9b1e74e6d3664564726cfa6ae4c43bf1a53d985c6a"
+    },
+    {
+      "path": "tests/README.md",
+      "bytes": 1989,
+      "sha256": "a6349fc3b9ad1eb3a10f31dd09a48a3f61bfe1d40209feab8df503618174556a"
+    },
+    {
+      "path": "third_party/README.md",
+      "bytes": 1331,
+      "sha256": "a767821754ced63b043a7a0739f8fad36ef963fafceb15a677632cfd9fb98b55"
+    }
+  ]
+}

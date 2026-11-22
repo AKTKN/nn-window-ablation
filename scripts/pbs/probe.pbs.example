@@ -1,0 +1,29 @@
+#!/bin/bash
+# Template only. Replace site-specific settings before later use.
+#PBS -N nnwa_probe
+#PBS -l select=1:ncpus=1:mem=4gb
+#PBS -l walltime=00:10:00
+#PBS -j oe
+
+set -euo pipefail
+: "${NNWA_REPO_ROOT:?Set the absolute repository path}"
+: "${NNWA_CONDA_EXE:?Set the absolute Conda executable}"
+: "${NNWA_CONDA_PREFIX:?Set the absolute environment prefix}"
+: "${NNWA_DATA_ROOT:?Set the absolute data root}"
+: "${NNWA_RUN_ROOT:?Set the absolute run root}"
+
+cd "$NNWA_REPO_ROOT"
+hostname
+uname -a
+lscpu
+free -h
+git rev-parse HEAD
+findmnt -T "$NNWA_REPO_ROOT"
+findmnt -T "$NNWA_DATA_ROOT"
+findmnt -T "$NNWA_RUN_ROOT"
+
+"$NNWA_CONDA_EXE" run --no-capture-output -p "$NNWA_CONDA_PREFIX" \
+  python -c 'import platform, torch, torch_geometric, stim, pymatching; print({"python": platform.python_version(), "torch": torch.__version__, "pyg": torch_geometric.__version__, "stim": stim.__version__, "pymatching": pymatching.__version__, "torch_cuda_build": torch.version.cuda})'
+
+# Read-only metadata/import probe; no simulation, training, or performance claim.
+# See docs/04_cluster_workflow.md for the additional path write/identity check.

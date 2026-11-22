@@ -1,0 +1,6 @@
+name: uniform_circuit
+probability: 0.003
+after_clifford_depolarization: ${noise.probability}
+before_round_data_depolarization: ${noise.probability}
+before_measure_flip_probability: ${noise.probability}
+after_reset_flip_probability: ${noise.probability}

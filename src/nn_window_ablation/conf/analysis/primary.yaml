@@ -1,0 +1,14 @@
+unit: whole_trajectory
+confidence_level: 0.95
+ler_interval: wilson
+paired_interval: paired_bootstrap
+sparse_interval: conservative_exact_discordances
+sparse_rule: null
+bootstrap_replicates: null
+contrasts:
+  - S_minus_G
+  - F_minus_G
+  - S_minus_F
+  - Splus_minus_W
+  - W_minus_D
+pool_training_seeds_as_independent_shots: false

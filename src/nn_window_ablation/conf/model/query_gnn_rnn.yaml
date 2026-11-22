@@ -1,0 +1,10 @@
+name: query_gnn_rnn
+upstream_commit: 458210ac74ed0047760b8789c169e6b9eff732b8
+graph_channels: [3, 64, 256]
+feature_group_rounds: 2
+hidden_size: 256
+gru_layers: 4
+spatial_aggregation: distance_dependent_lange
+query_projection: additive
+head: shared_scalar
+empty_observation_embedding: learned

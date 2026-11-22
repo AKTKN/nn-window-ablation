@@ -1,0 +1,13 @@
+# @package _global_
+study_stage: main
+code:
+  distance: 5
+  rounds_per_distance: 12
+noise:
+  probability: 0.003
+window:
+  core_per_distance: 1
+  left_per_distance: 1
+  right_per_distance: 1
+data:
+  family_id: paired_d5

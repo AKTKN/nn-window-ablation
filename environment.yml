@@ -1,0 +1,7 @@
+# Base environment intent only. Resolve and validate scientific packages in P0.
+name: nn-window-ablation
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip

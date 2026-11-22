@@ -1,0 +1,43 @@
+#!/bin/bash
+# Template only. Requires the implemented CLI/scientific pipeline and chosen budgets.
+# Candidate full-node request; confirm queue/account/resource policy at the site.
+#PBS -N nnwa_d5
+#PBS -l select=1:ncpus=96:mem=350gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+
+set -euo pipefail
+: "${NNWA_REPO_ROOT:?Set the absolute repository path}"
+: "${NNWA_CONDA_EXE:?Set the absolute Conda executable}"
+: "${NNWA_CONDA_PREFIX:?Set the absolute environment prefix}"
+: "${NNWA_DATA_ROOT:?Set the absolute data root}"
+: "${NNWA_RUN_ROOT:?Set the absolute run root}"
+: "${NNWA_EXPECTED_COMMIT:?Set the source revision selected for this job}"
+: "${NNWA_THREADS:?Set an intra-operation thread count within the allocation}"
+: "${NNWA_ALLOCATED_CPUS:?Set the requested CPU allocation for this job}"
+: "${NNWA_MAX_STEPS:?Choose the pilot update count}"
+: "${NNWA_BATCH_SIZE:?Choose the effective trajectory batch size}"
+: "${NNWA_LEARNING_RATE:?Choose the pilot learning rate}"
+: "${NNWA_OPTIMIZER:?Choose the optimizer supported by the implementation}"
+: "${NNWA_SCHEDULER:?Choose a supported schedule or its explicit disabled value}"
+: "${NNWA_RUN_NAME:?Choose a portable run identifier}"
+
+cd "$NNWA_REPO_ROOT"
+NNWA_ACTUAL_COMMIT=$(git rev-parse HEAD)
+if [[ "$NNWA_ACTUAL_COMMIT" != "$NNWA_EXPECTED_COMMIT" ]]; then
+  printf '%s\n' 'Source revision differs from the selected job revision.' >&2
+  exit 2
+fi
+
+export NNWA_DATA_ROOT NNWA_RUN_ROOT
+export OMP_NUM_THREADS="$NNWA_THREADS"
+export MKL_NUM_THREADS="$NNWA_THREADS"
+
+"$NNWA_CONDA_EXE" run --no-capture-output -p "$NNWA_CONDA_PREFIX" \
+  nnwa train experiment=pilot_d5 runtime=cpu training=full_closed \
+  seed=101 run_name="$NNWA_RUN_NAME" \
+  runtime.intraop_threads="$NNWA_THREADS" runtime.interop_threads=1 \
+  runtime.allocated_cpus="$NNWA_ALLOCATED_CPUS" data.num_workers=0 \
+  training.max_steps="$NNWA_MAX_STEPS" training.batch_size="$NNWA_BATCH_SIZE" \
+  training.learning_rate="$NNWA_LEARNING_RATE" \
+  training.optimizer="$NNWA_OPTIMIZER" training.scheduler="$NNWA_SCHEDULER"
