@@ -10,13 +10,13 @@ reference for that construction [3].
 
 ## Current state
 
-This archive contains the repository structure, English design documents,
+This repository contains English design documents, implementation prompts,
 configuration examples, dependency declarations, and PBS script templates.
 Python source files contain responsibility docstrings only. The simulator,
 decoder adapter, training pipeline, CLI, scientific tests, and export workflow
-are not implemented. No experiment, cluster job, dependency compatibility check,
-or remote publication has been performed. In particular, `nnwa` is a planned
-command name and is not registered as an executable in `pyproject.toml`.
+are not implemented. Experiment execution, cluster jobs, and dependency
+compatibility checks remain pending. `nnwa` is a planned command name and is
+not registered as an executable in `pyproject.toml`.
 
 See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for phase status and
 [AGENTS.md](AGENTS.md) for development contracts.
@@ -60,6 +60,7 @@ definition is in [02_ablation_protocol.md](docs/02_ablation_protocol.md).
 |---|---|
 | `src/nn_window_ablation/` | Future simulation, feature, model, training, evaluation, and analysis modules. |
 | `src/nn_window_ablation/conf/` | Hydra groups; the initial experiment is `pilot_d5`. |
+| `prompts/` | P0–P7 implementation prompts and test assurance plan. |
 | `tests/` | Test plan; no placeholder passing tests. |
 | `scripts/pbs/` | Site-adjustable `.pbs.example` files; no scheduler submission logic in scientific modules. |
 | `third_party/` | Upstream provenance and future source-integration record. |

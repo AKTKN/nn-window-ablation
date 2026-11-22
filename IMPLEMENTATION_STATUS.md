@@ -1,14 +1,24 @@
 # Implementation status
 
-Snapshot date: 2026-11-22. State: preimplementation scaffold.
+Last updated 2026-11-23. State: preimplementation scaffold.
 
 ## Delivered structure
 
 The repository contains English scientific/design documents, docstring-only
 Python module placeholders, Hydra YAML examples, package/dependency declarations,
 and PBS examples. `nnwa` has no registered console entry point. No upstream model
-source has been vendored. No Git repository was initialized or published by this
-delivery.
+source has been vendored.
+
+## GitHub publication
+
+On 2026-11-23, the initial scaffold and phase prompts were committed and pushed
+to `main` in the private GitHub repository [AKTKN/nn-window-ablation](https://github.com/AKTKN/nn-window-ablation).
+GitHub reported `main` as the default branch, and `git ls-remote` returned the
+initial local commit `dbf1b742457a412b5aa5834409d14bf31f76e58b` for `main`.
+Before committing, all 52 entries in the original scaffold manifest matched their
+recorded sizes and SHA-256 hashes. The manifest and check log describe that
+original snapshot. The publication checks also parsed the 13 Python placeholders
+and package metadata, and both PBS templates passed `bash -n`.
 
 ## Phase status
 
