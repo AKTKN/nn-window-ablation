@@ -6,10 +6,11 @@ The cluster workflow uses Conda for the Python base environment and pip for the
 selected scientific packages. `environment.yml` declares Python 3.11 and pip.
 `pyproject.toml` is the single source of the candidate scientific dependency
 versions under its `experiment` extra. The upstream Lange requirements provide
-the starting versions; these declarations have not been installed or validated
-for this project [1].
+the starting versions [1]. The [implementation status](../IMPLEMENTATION_STATUS.md)
+records the local dependency imports and test environment. Compute-node
+validation remains pending.
 
-The following commands are proposed for P0 in the cloned checkout:
+Use these commands in the cloned checkout to set up the candidate environment.
 
 ```bash
 conda env create -f environment.yml

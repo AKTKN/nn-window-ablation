@@ -24,7 +24,7 @@ experiment = [
   "omegaconf==2.3.0",
   "matplotlib==3.10.3",
 ]
-dev = ["pytest>=8,<9"]
+dev = ["pytest>=8,<9", "pytest-xdist>=3.6,<4"]
 
 # No [project.scripts] entry until the CLI is implemented in P0.
 [tool.setuptools.packages.find]
@@ -32,3 +32,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 nn_window_ablation = ["conf/*.yaml", "conf/*/*.yaml", "conf/README.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "performance: measures runtime or deliberately uses multiple numerical threads or loader workers",
+  "cluster: requires an allocated cluster node or scheduler access",
+]

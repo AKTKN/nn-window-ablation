@@ -12,11 +12,10 @@ reference for that construction [3].
 
 This repository contains English design documents, configuration examples,
 dependency declarations, and PBS script templates.
-Python source files contain responsibility docstrings only. The simulator,
-decoder adapter, training pipeline, CLI, scientific tests, and export workflow
-are not implemented. Experiment execution, cluster jobs, and dependency
-compatibility checks remain pending. `nnwa` is a planned command name and is
-not registered as an executable in `pyproject.toml`.
+The scientific source modules are placeholders. A shared test bootstrap covers
+CPU thread limits and the test configuration profile. The simulator, decoder
+adapter, training pipeline, CLI, scientific tests, and export workflow await
+their implementation phases. `nnwa` is the planned command name for P0.
 
 See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for phase status and
 [AGENTS.md](AGENTS.md) for development contracts.
@@ -60,7 +59,7 @@ definition is in [02_ablation_protocol.md](docs/02_ablation_protocol.md).
 |---|---|
 | `src/nn_window_ablation/` | Future simulation, feature, model, training, evaluation, and analysis modules. |
 | `src/nn_window_ablation/conf/` | Hydra groups; the initial experiment is `pilot_d5`. |
-| `tests/` | Test plan; no placeholder passing tests. |
+| [tests/](tests/README.md) | Shared test setup, CPU checks, and phase test plan. |
 | `scripts/pbs/` | Site-adjustable `.pbs.example` files; no scheduler submission logic in scientific modules. |
 | `third_party/` | Upstream provenance and future source-integration record. |
 | `environment.yml`, `pyproject.toml` | Conda base intent and candidate Python dependencies. |

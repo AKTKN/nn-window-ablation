@@ -1,9 +1,9 @@
 # Configuration examples
 
-These YAML files specify the intended Hydra 1.3 interface. They have no executable
-consumer yet. P0 will implement composition, typed validation, and the `nnwa`
-entry point. Root `_self_` precedes `experiment`, and experiment files use
-`# @package _global_`, so an experiment overrides the composed groups [1].
+These YAML files specify the Hydra 1.3 interface. The shared tests compose the
+test CPU profile. P0 will implement application composition, typed validation,
+and the `nnwa` entry point. Root `_self_` precedes `experiment`, and experiment
+files use `# @package _global_`, so an experiment overrides the composed groups [1].
 
 | Group | Initial choice | Purpose |
 |---|---|---|
@@ -41,7 +41,9 @@ The CPU profile's 16 intra-operation threads are an initial benchmark candidate,
 not an established optimum. Its candidate sweep is 1, 8, 16, 32, 48, and 96 threads,
 bounded by the actual PBS allocation. Start with one Python process, one
 inter-operation thread, and zero data-loader workers. `local_cpu` starts with one
-thread. No thread setting changes distance or model dimensions.
+thread. `test_cpu` declares one application process, one intra-operation thread,
+one inter-operation thread, and an eight-CPU allocation cap for local tests.
+Thread settings are independent of distance and model dimensions.
 
 Set `NNWA_DATA_ROOT` and `NNWA_RUN_ROOT` for cluster storage. Their fallback paths
 are `./data` and `./runs`; P0 must resolve them to absolute paths before I/O.
