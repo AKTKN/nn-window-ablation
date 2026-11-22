@@ -1,0 +1,27 @@
+#!/bin/bash
+# Template only. Choose site-specific settings before use.
+#PBS -N nnwa_d5_profile
+#PBS -l select=1:ncpus=8:mem=4gb
+#PBS -l walltime=00:10:00
+#PBS -j oe
+
+set -euo pipefail
+: "${NNWA_REPO_ROOT:?Set the absolute repository path}"
+: "${NNWA_CONDA_EXE:?Set the absolute Conda executable}"
+: "${NNWA_CONDA_PREFIX:?Set the absolute environment prefix}"
+: "${NNWA_EXPECTED_COMMIT:?Set the source revision selected for this job}"
+: "${NNWA_THREADS:?Set the PyTorch intra-op threads for this profile}"
+: "${NNWA_ALLOCATED_CPUS:?Set the CPU allocation requested above}"
+: "${NNWA_PROFILE_OUTPUT:?Set an absolute path for the new profile JSON}"
+
+cd "$NNWA_REPO_ROOT"
+if [[ "$(git rev-parse HEAD)" != "$NNWA_EXPECTED_COMMIT" ]] || [[ -n "$(git status --porcelain)" ]]; then
+  printf '%s\n' 'Use a clean checkout of the selected source revision.' >&2
+  exit 2
+fi
+
+printf 'PBS job %s, requested CPUs %s\n' "${PBS_JOBID:-unavailable}" "$NNWA_ALLOCATED_CPUS"
+"$NNWA_CONDA_EXE" run --no-capture-output -p "$NNWA_CONDA_PREFIX" \
+  python -m nn_window_ablation.profiling \
+  --threads "$NNWA_THREADS" --allocated-cpus "$NNWA_ALLOCATED_CPUS" \
+  --batch-size 2 --warmup 1 --steps 2 --output "$NNWA_PROFILE_OUTPUT"

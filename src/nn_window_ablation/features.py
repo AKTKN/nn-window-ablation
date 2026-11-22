@@ -143,18 +143,24 @@ def _grid_tiles(
     return tuple(tiles)
 
 
+def memory_grids(distance: int) -> tuple[int, ...]:
+    """Square memory grid widths, from the outermost split to the innermost."""
+    grids = {3: (), 5: (2,), 7: (3,), 9: (2, 2)}
+    if distance not in grids:
+        raise ValueError("Lange square memory tiling is defined for distances 3, 5, 7 and 9")
+    return grids[distance]
+
+
 def build_feature_geometry(layout: ObservationLayout) -> FeatureGeometry:
     """Prepare fixed spatial tiles from the public detector lattice."""
-    grids = {3: (), 5: (2,), 7: (3,), 9: (2, 2)}
-    if layout.distance not in grids:
-        raise ValueError("Lange square memory tiling is defined for distances 3, 5, 7 and 9")
+    grids = memory_grids(layout.distance)
     coordinates = tuple(site.coordinates for site in layout.detectors)
     xy = np.array([point[:2] for point in coordinates])
     if xy.shape != (len(coordinates), 2) or not len(xy) or not np.isfinite(xy).all():
         raise ValueError("expected a nonempty detector lattice with finite spatial coordinates")
     xy = (xy - xy.min(axis=0)).astype(np.int64)
     indices = np.arange(len(xy), dtype=np.int64)
-    return FeatureGeometry(layout.distance, coordinates, _grid_tiles(xy, indices, layout.distance, grids[layout.distance]))
+    return FeatureGeometry(layout.distance, coordinates, _grid_tiles(xy, indices, layout.distance, grids))
 
 
 def _temporal_groups(metadata: QueryMetadata) -> tuple[TemporalGroup, ...]:

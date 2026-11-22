@@ -1,9 +1,11 @@
 # PBS templates
 
 `pbs/probe.pbs.example` describes a short compute-node environment probe.
-`pbs/pilot.pbs.example` describes the future distance-5 training launch. These are
-templates only; they were not submitted. The pilot requires the implemented CLI,
-the scientific phases, and explicitly chosen pilot budgets.
+`pbs/profile.pbs.example` runs the P3 distance-5 timing workload with two
+trajectories, one warm-up iteration, and two measured iterations. It requires
+a clean checkout at the recorded source revision and writes a new JSON
+report. `pbs/pilot.pbs.example` describes the later training launch. The pilot
+requires the scientific workflow and explicitly chosen budgets.
 
 The supplied node record lists 96 PBS CPU resources and 350 GB of memory. The
 pilot template's corresponding `select` request is a candidate for the site to
@@ -26,6 +28,7 @@ an explicit Conda executable and environment prefix [2].
 | `NNWA_EXPECTED_COMMIT` | Source commit selected for the job. |
 | `NNWA_THREADS` | Chosen intra-operation thread count, bounded by the allocation. |
 | `NNWA_ALLOCATED_CPUS` | CPU allocation requested for this reviewed job. |
+| `NNWA_PROFILE_OUTPUT` | Path for a new profiling JSON file in an existing output directory. |
 | `NNWA_MAX_STEPS`, `NNWA_BATCH_SIZE`, `NNWA_LEARNING_RATE` | Explicit pilot optimization settings. |
 | `NNWA_OPTIMIZER`, `NNWA_SCHEDULER` | Pilot-selected algorithm and schedule; use an explicit disabled-scheduler value when supported. |
 | `NNWA_RUN_NAME` | Portable identifier for the run. |

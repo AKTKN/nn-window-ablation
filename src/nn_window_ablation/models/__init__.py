@@ -1,1 +1,1 @@
-"""Model-adapter namespace. No decoder implementation is included."""
+"""Neural query decoders and objectives."""

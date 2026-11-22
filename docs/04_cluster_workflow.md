@@ -6,7 +6,9 @@ The repository name is `nn-window-ablation`. The initial pilot uses the rotated 
 
 The supplied login-node information identifies Rocky Linux 8.8, 20 CPU cores, approximately 187 GiB of memory, and no available `nvidia-smi` command. The supplied compute-node record advertises `resources_available.ncpus=96`, `resources_available.mem=350gb`, and a `job-busy` state. No GPU resource appears in that record. These observations support a CPU-first workflow; they do not establish that every cluster node lacks a GPU or that the listed compute node is currently available. PBS commands are located under `/opt/pbs/bin`.
 
-This document specifies a proposed workflow. No remote session, environment installation, job submission, or runtime benchmark has been performed. The repository structure is to be saved locally before subsequent GitHub publication and phase-by-phase implementation. The commands and batch script below are templates for that later stage, not implemented capabilities or instructions already executed.
+This document specifies the planned cluster workflow. P3 has a separate
+local CPU profile. Compute-node environment validation, timing, and scheduler
+execution remain pending.
 
 ## 2. Local development and cluster checkout
 
@@ -39,6 +41,12 @@ subject to the approved CPU allocation. These are thread counts for one training
 Set `OMP_NUM_THREADS` and `MKL_NUM_THREADS` consistently, and have the application's runtime initialization call `torch.set_num_threads` before model execution. PyTorch documents that `MKL_NUM_THREADS` takes precedence over `OMP_NUM_THREADS`, and that intra-operation thread settings should be applied before eager/JIT/autograd work. Apply the inter-operation setting once at process startup. [5–7]
 
 Benchmark identical $d=5$ workloads, model parameters, batch sizes, and update counts. Record warm-up separately, then measure trajectories per second, optimizer-step time, peak resident memory, and total wall time. Select the thread count by measured throughput; a larger thread pool is not assumed to be faster for small graphs. Keep generation and graph-construction time visible in the measurements. Parallel data preparation or concurrent independent jobs can be considered after this benchmark, with their total threads bounded by the allocation. PyTorch's multiprocessing guidance describes the oversubscription that otherwise results. [8]
+
+The P3 profiling template invokes the installed profiling module once per
+fresh process. Supply the declared allocation and chosen intra-operation
+thread count explicitly. It runs the bounded full-architecture workload
+and writes timings and effective runtime settings to a new JSON file.
+[P3 PBS template](../scripts/pbs/profile.pbs.example)
 
 ## 5. PBS resource request and template
 

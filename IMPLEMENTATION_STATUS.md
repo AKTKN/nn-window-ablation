@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated 2026-11-23. P0 through P2 are implemented and verified locally.
+Last updated 2026-11-23. P0 through P3 are implemented and verified locally.
 
 ## Delivered structure
 
@@ -9,7 +9,9 @@ configuration, packaged Hydra presets, and CPU runtime checks. The simulator
 builds the original and annotated Stim circuits and samples aligned detector
 bits and logical labels. The window pipeline selects permitted raw detector
 bits and batches Lange-compatible graphs with label-independent metadata.
-Decoding and PBS orchestration await their implementation phases.
+The shared query decoder supports finite CPU forward/backward steps and
+model checkpoint payloads. Persistent training, statistical evaluation,
+and campaign orchestration await their implementation phases.
 
 ## GitHub publication
 
@@ -32,7 +34,7 @@ checked byte for byte after removing them from the Git index.
 | P0 | Packaging, CLI, typed configuration, validated CPU environment | Implemented and verified locally. Compute-node validation pending. |
 | P1 | Physical circuit, clean cuts, exact global/core labels | Implemented and verified locally on the finite fixtures. |
 | P2 | Observation windows and features without future leakage | Implemented and independently verified locally. |
-| P3 | Lange model adapter, shared queries, CPU profile | Not implemented. |
+| P3 | Lange model adapter, shared queries, CPU profile | Implemented and independently verified locally. Allocated-node profile pending. |
 | P4 | Datasets, training, checkpoints, deterministic resume | Not implemented. |
 | P5 | Paired G/F/S evaluation and uncertainty | Not implemented. |
 | P6 | Matched S+/W/D continuation | Not implemented. |
@@ -43,6 +45,16 @@ The scientific pilot is $d=5$; a small $d=3$ unit fixture is permitted in P1 but
 not a required training stage or the pilot.
 
 ## Validation record
+
+### P3
+
+All 15 focused tests, 126 independently run cumulative tests, and four
+isolated CPU profile cases passed. The checks covered pinned upstream
+components, full and sampled BCE gradients, one full distance-5 update,
+checkpoint readback, and prediction isolation. The local profile measured
+1, 2, 4, and 8 threads without changing the architecture. Main training and
+shot budgets remain unresolved pending the allocated-node profile.
+Exact commands, results, and the P4 handoff are in [P3.md](docs/verification/P3.md).
 
 ### P2
 
