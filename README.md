@@ -12,7 +12,8 @@ reference for that construction [3].
 
 P0 provides an installed `nnwa validate` command, typed configuration, and
 local CPU verification. P1 provides the Stim circuit and joint sampler for
-detectors and exact logical labels. Windowing, the decoder adapter, training,
+detectors and exact logical labels. P2 provides observation windows,
+Lange-compatible features, and batch assembly. The decoder adapter, training,
 and artifact export await their implementation phases.
 
 See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for phase status and
@@ -90,6 +91,9 @@ paths, and CPU allocation.
 `generate`, `train`, `evaluate`, and `analyze` report the implementation phase
 they require. For circuit sampling, see the Python API example and local
 evidence. [P1 verification](docs/verification/P1.md)
+
+For buffered observations and graph batching, see the P2 interface and
+independent test results. [P2 verification](docs/verification/P2.md)
 
 ## References
 

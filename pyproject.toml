@@ -31,7 +31,7 @@ dev = ["pytest>=8,<9", "pytest-xdist>=3.6,<4"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-nn_window_ablation = ["conf/*.yaml", "conf/*/*.yaml", "conf/README.md"]
+nn_window_ablation = ["conf/*.yaml", "conf/*/*.yaml", "conf/README.md", "LANGE_LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

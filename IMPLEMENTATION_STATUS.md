@@ -1,14 +1,15 @@
 # Implementation status
 
-Last updated 2026-11-23. P0 and P1 are implemented and verified locally.
+Last updated 2026-11-23. P0 through P2 are implemented and verified locally.
 
 ## Delivered structure
 
 The repository provides the installed `nnwa validate` workflow, typed
 configuration, packaged Hydra presets, and CPU runtime checks. The simulator
 builds the original and annotated Stim circuits and samples aligned detector
-bits and logical labels. Window features, decoding, and PBS orchestration
-await their implementation phases.
+bits and logical labels. The window pipeline selects permitted raw detector
+bits and batches Lange-compatible graphs with label-independent metadata.
+Decoding and PBS orchestration await their implementation phases.
 
 ## GitHub publication
 
@@ -30,7 +31,7 @@ checked byte for byte after removing them from the Git index.
 |---|---|---|
 | P0 | Packaging, CLI, typed configuration, validated CPU environment | Implemented and verified locally. Compute-node validation pending. |
 | P1 | Physical circuit, clean cuts, exact global/core labels | Implemented and verified locally on the finite fixtures. |
-| P2 | Observation windows and features without future leakage | Not implemented. |
+| P2 | Observation windows and features without future leakage | Implemented and independently verified locally. |
 | P3 | Lange model adapter, shared queries, CPU profile | Not implemented. |
 | P4 | Datasets, training, checkpoints, deterministic resume | Not implemented. |
 | P5 | Paired G/F/S evaluation and uncertainty | Not implemented. |
@@ -42,6 +43,14 @@ The scientific pilot is $d=5$; a small $d=3$ unit fixture is permitted in P1 but
 not a required training stage or the pilot.
 
 ## Validation record
+
+### P2
+
+All 23 focused tests passed. The independent reviewer ran all 111 cumulative
+tests and checked the pinned Lange graph conventions, all 108 pilot masks,
+and invariance to excluded detector changes. The feature tests retain empty
+graphs and separate supervision from model inputs. Exact commands, review
+results, and the P3 handoff are in [P2.md](docs/verification/P2.md).
 
 ### P1
 
