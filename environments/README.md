@@ -10,12 +10,13 @@ the starting versions [1]. The [implementation status](../IMPLEMENTATION_STATUS.
 records the local dependency imports and test environment. Compute-node
 validation remains pending.
 
-Use these commands in the cloned checkout to set up the candidate environment.
+Use these commands in the cloned checkout to set up the `nn_window_decoding`
+development environment.
 
 ```bash
 conda env create -f environment.yml
-conda run -n nn-window-ablation python -m pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cpu
-conda run -n nn-window-ablation python -m pip install -e '.[experiment,dev]'
+conda run -n nn_window_decoding python -m pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cpu
+conda run -n nn_window_decoding python -m pip install -e '.[experiment,dev]'
 ```
 
 Bootstrap the CPU wheel before installing the extra so the declared PyTorch
@@ -38,12 +39,12 @@ x86-64 builds. The [pip inventory](local-linux-64.pip.txt) pins the added
 packages, including the CPU PyTorch build.
 
 ```bash
-conda create -n nnwa-local-check --file environments/local-linux-64.conda.txt
-conda activate nnwa-local-check
+conda create -n nn_window_decoding --file environments/local-linux-64.conda.txt
+conda activate nn_window_decoding
 python -m pip install --constraint environments/local-linux-64.pip.txt \
   'torch==2.7.0+cpu' --index-url https://download.pytorch.org/whl/cpu
 python -m pip install --no-deps -r environments/local-linux-64.pip.txt
-python -m pip install --no-deps --no-build-isolation -e .
+python -m pip install --no-build-isolation --constraint environments/local-linux-64.pip.txt -e '.[experiment,dev]'
 python -m pip check
 ```
 
@@ -58,10 +59,10 @@ each run's provenance directory. Candidate commands after creating that director
 are:
 
 ```bash
-conda env export -n nn-window-ablation --from-history > environment.intent.yml
-conda env export -n nn-window-ablation > environment.resolved.yml
-conda list -n nn-window-ablation --explicit > conda.explicit.txt
-conda run -n nn-window-ablation python -m pip freeze > pip.freeze.txt
+conda env export -n nn_window_decoding --from-history > environment.intent.yml
+conda env export -n nn_window_decoding > environment.resolved.yml
+conda list -n nn_window_decoding --explicit > conda.explicit.txt
+conda run -n nn_window_decoding python -m pip freeze > pip.freeze.txt
 ```
 
 The history export captures user-requested Conda specifications. The explicit

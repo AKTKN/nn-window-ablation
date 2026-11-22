@@ -1,12 +1,14 @@
 # Implementation status
 
-Last updated 2026-11-23. P0 is implemented and verified locally.
+Last updated 2026-11-23. P0 and P1 are implemented and verified locally.
 
 ## Delivered structure
 
 The repository provides the installed `nnwa validate` workflow, typed
-configuration, packaged Hydra presets, and CPU runtime checks. Scientific
-modules and PBS orchestration await their implementation phases.
+configuration, packaged Hydra presets, and CPU runtime checks. The simulator
+builds the original and annotated Stim circuits and samples aligned detector
+bits and logical labels. Window features, decoding, and PBS orchestration
+await their implementation phases.
 
 ## GitHub publication
 
@@ -27,7 +29,7 @@ checked byte for byte after removing them from the Git index.
 | Phase | Scope | Status |
 |---|---|---|
 | P0 | Packaging, CLI, typed configuration, validated CPU environment | Implemented and verified locally. Compute-node validation pending. |
-| P1 | Physical circuit, clean cuts, exact global/core labels | Not implemented. |
+| P1 | Physical circuit, clean cuts, exact global/core labels | Implemented and verified locally on the finite fixtures. |
 | P2 | Observation windows and features without future leakage | Not implemented. |
 | P3 | Lange model adapter, shared queries, CPU profile | Not implemented. |
 | P4 | Datasets, training, checkpoints, deterministic resume | Not implemented. |
@@ -41,6 +43,16 @@ not a required training stage or the pilot.
 
 ## Validation record
 
+### P1
+
+All 23 focused tests and all 88 cumulative tests passed with eight workers
+in `nn_window_decoding`. The independent Pauli-frame oracle matched 2,645
+elementary outcomes in the distance-3 fixture and the selected faults at the
+distance-5 pilot cuts and endpoints. The pilot checks also verified the
+measurement-dependent detector arrivals and retention of zero-event shots
+in a separate $p=0$ fixture. The witness cases, exact commands, inventory
+checksum, and C1 limits are recorded in [P1.md](docs/verification/P1.md).
+
 ### P0
 
 The local C0 checks passed with 61 focused and 65 cumulative tests, with zero
@@ -50,6 +62,21 @@ and run-name collisions were rejected without publishing new run records.
 A fresh Conda environment recreated from the local inventories passed
 `pip check`, dependency imports, and the wheel CLI check. The exact commands,
 environment, and per-claim evidence are recorded in [P0.md](docs/verification/P0.md).
+
+### Development environment
+
+Created `nn_window_decoding` from the recorded local Conda builds and pip
+versions and installed the project in editable mode with the `experiment` and
+`dev` extras. The dependency imports and `pip check` passed with Python 3.11.18,
+PyTorch 2.7.0+cpu, and Stim 1.15.0. The cumulative suite at source revision
+`041d60d` passed all 65 tests in 9.67 s, with eight workers and one numerical
+thread per worker. It used the thread exports below and the following command.
+
+```bash
+taskset -c 0-7 conda run --no-capture-output -n nn_window_decoding \
+  python -m pytest -n 8 --dist=load --strict-markers --strict-config \
+  -m 'not performance and not cluster' tests
+```
 
 ### Original scaffold
 
@@ -99,8 +126,9 @@ Both reported zero failures and skips. The test IDs are in
 | `test_incompatible_interop_setup_fails_in_fresh_process` | A synchronous child with inter-op threads already set to two fails explicitly when the bootstrap requests one. |
 | `test_packaged_test_cpu_profile_composes_with_pilot` | Hydra composition matches the independently specified CPU settings and the pilot's distance, noise probability, model width, and GRU depth. |
 
-These checks established the shared test setup before P0. Scientific
-acceptance tests and allocated compute-node checks remain pending.
+These checks established the shared test setup before P0. The phase records
+above provide subsequent acceptance evidence. Allocated compute-node
+checks remain pending.
 
 ## Decisions retained for the pilot
 

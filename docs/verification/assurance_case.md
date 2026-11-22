@@ -7,7 +7,7 @@ evidence for each phase determine whether its claim is established.
 | Claim | Scope | Depends on | Principal evidence | Status |
 |---|---|---|---|---|
 | C0 | Installed commands resolve and validate the intended configuration and CPU limits. | Recorded environment | Independent configuration calculations, installed CLI subprocesses, invalid-setting controls, and runtime checks | Verified locally. Allocated-node check pending. [P0 evidence](P0.md) |
-| C1 | Detector and label records represent the specified circuit and clean-cut contributions. | C0 and Stim sampling semantics | Independent Pauli-frame propagation, elementary faults, and preparation/cut/readout cases | Pending P1 |
+| C1 | Detector and label records represent the specified circuit and clean-cut contributions. | C0 and Stim sampling semantics | Independent Pauli-frame propagation, 2,645 elementary signatures, and pilot cut/readout checks | Verified locally on the specified fixtures. [P1 evidence](P1.md) |
 | C2 | Features use only the observations and metadata allowed for a query. | C1 metadata | Independent availability sets, excluded-observation perturbations, empty/missing cases, and graph boundaries | Pending P2 |
 | C3 | The shared query model and objective preserve the architecture and reset state across independent windows. | C2 | Component and gradient checks, query-order checks, and distance-5 execution | Pending P3 |
 | C4 | Data, training, and resume preserve identities, random streams, and update budgets. | C1–C3 | Exact round trips, an independent update calculation, and interruption and corruption checks | Pending P4 |

@@ -11,8 +11,9 @@ reference for that construction [3].
 ## Current state
 
 P0 provides an installed `nnwa validate` command, typed configuration, and
-local CPU verification. The simulator, decoder adapter, training pipeline,
-scientific tests, and export workflow await their implementation phases.
+local CPU verification. P1 provides the Stim circuit and joint sampler for
+detectors and exact logical labels. Windowing, the decoder adapter, training,
+and artifact export await their implementation phases.
 
 See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for phase status and
 [AGENTS.md](AGENTS.md) for development contracts.
@@ -75,8 +76,8 @@ Set up the [Conda environment](environments/README.md), then run the installed
 command from the directory where you want relative paths to resolve.
 
 ```bash
-conda run -n nn-window-ablation nnwa validate runtime=local_cpu
-conda run -n nn-window-ablation nnwa validate --multirun \
+conda run -n nn_window_decoding nnwa validate runtime=local_cpu
+conda run -n nn_window_decoding nnwa validate --multirun \
   experiment=pilot_d5,paired_d7 runtime=local_cpu window.right_per_distance=0.5
 ```
 
@@ -87,7 +88,8 @@ for each accepted configuration. The default run root is `./runs`. Set
 paths, and CPU allocation.
 
 `generate`, `train`, `evaluate`, and `analyze` report the implementation phase
-they require. P1 starts with the [circuit and label contract](docs/05_implementation_phases.md#p1-physical-circuits-exact-labels-and-clean-cuts).
+they require. For circuit sampling, see the Python API example and local
+evidence. [P1 verification](docs/verification/P1.md)
 
 ## References
 

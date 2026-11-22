@@ -37,9 +37,12 @@ parameters and arrays. Keep Hydra and filesystem orchestration in configuration,
 CLI, and workflow modules. Do not add scheduler behavior to model or simulator
 code. Store generated data and run artifacts outside tracked source.
 
-Use Conda for the base environment and the documented CPU PyTorch installation
-candidate. Validate the resolved environment on an allocated compute node before
-claiming compatibility. No CUDA device is required by the initial execution path.
+Use the `nn_window_decoding` Conda environment for local development,
+simulation, and tests. Run `conda activate nn_window_decoding` or use
+`conda run -n nn_window_decoding`. Follow the documented CPU PyTorch
+installation in `environments/README.md`. Validate the resolved environment
+on an allocated compute node before claiming compatibility. No CUDA device
+is required by the initial execution path.
 
 Add tests for scientific invariants and behavior introduced by the requested
 phase. Do not add pass-only tests or mark a static scaffold check as a scientific
