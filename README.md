@@ -14,8 +14,8 @@ P0 provides an installed `nnwa validate` command, typed configuration, and
 local CPU verification. P1 provides the Stim circuit and joint sampler for
 detectors and exact logical labels. P2 provides observation windows,
 Lange-compatible features, and batch assembly. P3 provides the shared query
-decoder, its objective, and a bounded CPU profile. Persistent training and
-artifact export await their implementation phases.
+decoder, its objective, and a bounded CPU profile. P4 provides immutable
+datasets, fixed-update training, and exact local checkpoint replay.
 
 See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for phase status and
 [AGENTS.md](AGENTS.md) for development contracts.
@@ -57,13 +57,13 @@ definition is in [02_ablation_protocol.md](docs/02_ablation_protocol.md).
 
 | Path | Role |
 |---|---|
-| `src/nn_window_ablation/` | Future simulation, feature, model, training, evaluation, and analysis modules. |
+| `src/nn_window_ablation/` | Simulation, features, model, datasets, and training. |
 | `src/nn_window_ablation/conf/` | Hydra groups; the initial experiment is `pilot_d5`. |
 | [tests/](tests/README.md) | Shared test setup, CPU checks, and phase test plan. |
 | `scripts/pbs/` | Site-adjustable `.pbs.example` files; no scheduler submission logic in scientific modules. |
 | `third_party/` | Upstream provenance and future source-integration record. |
 | `environment.yml`, `pyproject.toml` | Conda base intent and candidate Python dependencies. |
-| `data/`, `runs/`, `exports/` | Untracked default output locations, created later when required. |
+| `data/`, `runs/`, `exports/` | Untracked output locations for generated artifacts. |
 
 The user's workflow is local development, subsequent GitHub publication, cluster
 checkout, Conda installation, PBS execution, and compressed artifact transfer
@@ -89,9 +89,30 @@ for each accepted configuration. The default run root is `./runs`. Set
 [configuration reference](src/nn_window_ablation/conf/README.md) for run names,
 paths, and CPU allocation.
 
-`generate`, `train`, `evaluate`, and `analyze` report the implementation phase
-they require. For circuit sampling, see the Python API example and local
-evidence. [P1 verification](docs/verification/P1.md)
+## Generate data and train
+
+From a scratch directory, the following commands write a three-trajectory
+test set and train a separate model for one update. The overrides are for a
+local check. Main-run parameters are still pending.
+
+```bash
+conda run -n nn_window_decoding nnwa generate runtime=local_cpu runtime.allocated_cpus=1 \
+  data.split=test data.id=pilot-test data.shots=3 data.shard_shots=2
+conda run -n nn_window_decoding nnwa train runtime=local_cpu runtime.allocated_cpus=1 run_name=pilot-check \
+  training.max_steps=1 training.batch_size=1 training.learning_rate=0.001 \
+  training.optimizer=adam training.scheduler=none data.training_chunk_shots=2
+```
+
+To resume, repeat the training command with the original `run_name`, settings
+and roots, plus `checkpoint.resume_from=runs/pilot-check/checkpoint.pt`.
+Every completed update publishes a checkpoint. The run resumes toward its
+original phase budget, and reopening a terminal checkpoint adds zero updates.
+To train from a finalized train split, specify `data.train_source=stored_shards`
+and its `data.id`. [Configuration](src/nn_window_ablation/conf/README.md) ·
+[P4 verification](docs/verification/P4.md)
+
+`evaluate` and `analyze` are scheduled for P5. For the circuit sampler, see the
+Python API example and local evidence. [P1 verification](docs/verification/P1.md)
 
 For buffered observations and graph batching, see the P2 interface and
 independent test results. [P2 verification](docs/verification/P2.md)

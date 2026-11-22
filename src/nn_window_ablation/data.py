@@ -1,1 +1,378 @@
-"""P4: immutable packed shards, shot identities, and resumable training streams. Not implemented."""
+"""Immutable packed datasets and deterministic sampling identities."""
+
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
+from hashlib import sha256
+from pathlib import Path
+
+import numpy as np
+from numpy.typing import NDArray
+import stim
+
+from .artifacts import (
+    ArtifactError, atomic_file, canonical_json, file_integrity, read_json, staged_directory, verify_file, write_json,
+)
+from .simulation import (
+    Arrival, ArrivalPhase, CircuitArtifact, CircuitBundle, CircuitSpec, CoreInterval, Detector, Measurement,
+    Observable, ShotBatch, TemporalCut, sample_shots,
+)
+
+
+DATASET_SCHEMA = 1
+SEED_RECIPE = 1
+LABEL_SCHEMA = "clean_cut_core_parity_v1"
+FEATURE_SCHEMA = "lange_cropped_groups_v1"
+BITORDER = "little"
+SPLIT_CODES = {"train": 0, "validation": 1, "test": 2}
+ROW_SPACE = 1 << 32
+ARRAY_FILES = {
+    "detectors": "detectors.npy", "global_labels": "global_observables.npy",
+    "core_labels": "core_labels.npy", "shot_ids": "shot_ids.npy",
+}
+PHYSICAL_FILES = ("circuit_global.stim", "circuit_teacher.stim", "global.dem", "structure.json")
+
+
+@dataclass(frozen=True, slots=True)
+class StreamNamespace:
+    master_seed: int
+    family: str
+    split: str
+    distance: int
+    replicate: int
+    phase: str
+
+    def __post_init__(self) -> None:
+        if self.split not in SPLIT_CODES:
+            raise ValueError("dataset split must be train, validation, or test")
+        phases = ("base", "continuation") if self.split == "train" else ("held_out",)
+        if self.phase not in phases:
+            raise ValueError("dataset phase is incompatible with its split")
+        if type(self.master_seed) is not int or not 0 <= self.master_seed < 2**64:
+            raise ValueError("master seed must be an unsigned 64-bit integer")
+        if type(self.replicate) is not int or self.replicate < 0 or not isinstance(self.family, str) or not self.family.strip():
+            raise ValueError("a dataset needs a nonempty family and a nonnegative integer replicate")
+
+    def seed(self, role: str, ordinal: int = 0) -> int:
+        record = [SEED_RECIPE, asdict(self), role, ordinal]
+        return int.from_bytes(sha256(canonical_json(record)).digest()[:8], "little")
+
+
+@dataclass(frozen=True, slots=True)
+class SamplingPlan:
+    namespace: StreamNamespace
+    spec: CircuitSpec
+    original_sha256: str
+    teacher_sha256: str
+    stim_version: str
+    detector_count: int
+    core_count: int
+    chunk_rows: int
+    total_rows: int | None
+
+    def __post_init__(self) -> None:
+        if self.namespace.distance != self.spec.distance:
+            raise ValueError("stream distance must match the circuit")
+        if type(self.chunk_rows) is not int or not 1 <= self.chunk_rows <= ROW_SPACE:
+            raise ValueError("chunk size must be a positive supported row count")
+        if self.total_rows is not None and (type(self.total_rows) is not int or not 1 <= self.total_rows <= ROW_SPACE):
+            raise ValueError("dataset row count must fit the supported identity range")
+        if type(self.detector_count) is not int or self.detector_count < 1:
+            raise ValueError("detector count must be positive")
+        if self.core_count != self.spec.rounds // self.spec.core_length:
+            raise ValueError("core count must match the physical partition")
+
+    @classmethod
+    def from_circuit(
+        cls, bundle: CircuitBundle, namespace: StreamNamespace, *, chunk_rows: int, total_rows: int | None = None,
+    ) -> "SamplingPlan":
+        return cls(
+            namespace, bundle.spec, bundle.original.sha256, bundle.teacher.sha256, bundle.stim_version,
+            len(bundle.detectors), len(bundle.cores), chunk_rows, total_rows,
+        )
+
+    def record(self) -> dict:
+        return {
+            **asdict(self), "seed_recipe": SEED_RECIPE, "label_schema": LABEL_SCHEMA, "feature_schema": FEATURE_SCHEMA,
+            "sampler": "stim.compile_detector_sampler/separate_observables",
+            "bitorder": BITORDER,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict) -> "SamplingPlan":
+        fields = dict(record)
+        for key in ("seed_recipe", "label_schema", "feature_schema", "sampler", "bitorder"):
+            fields.pop(key)
+        fields["namespace"] = StreamNamespace(**fields["namespace"])
+        fields["spec"] = CircuitSpec(**fields["spec"])
+        plan = cls(**fields)
+        if plan.record() != record:
+            raise ArtifactError("incompatible sampling recipe or feature/label schema")
+        return plan
+
+    @property
+    def dataset_id(self) -> str:
+        return "ds-" + sha256(canonical_json(self.record())).hexdigest()
+
+    @property
+    def shot_prefix(self) -> int:
+        # Int64 IDs are P1/P2 join keys. The complete identity uses the full
+        # dataset digest, shard index and row, with no truncated digest.
+        split = SPLIT_CODES[self.namespace.split]
+        phase = int(self.namespace.phase == "continuation")
+        digest = int(self.dataset_id[3:10], 16)
+        return (split << 61) | (phase << 60) | (digest << 32)
+
+    def chunk_bounds(self, index: int) -> tuple[int, int]:
+        if type(index) is not int or index < 0:
+            raise ValueError("shard index must be a nonnegative integer")
+        start = index * self.chunk_rows
+        limit = ROW_SPACE if self.total_rows is None else self.total_rows
+        if start >= limit:
+            raise IndexError("trajectory stream is exhausted")
+        return start, min(self.chunk_rows, limit - start)
+
+    def assert_circuit(self, bundle: CircuitBundle) -> None:
+        if self != self.from_circuit(bundle, self.namespace, chunk_rows=self.chunk_rows, total_rows=self.total_rows):
+            raise ArtifactError("circuit, simulator version, or geometry differs from the sampling recipe")
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryID:
+    dataset_id: str
+    shard: int
+    row: int
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryBatch:
+    shots: ShotBatch
+    identities: tuple[TrajectoryID, ...]
+
+
+def sample_chunk(plan: SamplingPlan, bundle: CircuitBundle, index: int) -> ShotBatch:
+    plan.assert_circuit(bundle)
+    if plan.stim_version != stim.__version__:
+        raise ArtifactError(f"sampling recipe requires Stim {plan.stim_version}, found {stim.__version__}")
+    start, count = plan.chunk_bounds(index)
+    return sample_shots(
+        bundle, count, seed=plan.namespace.seed("circuit", index), first_shot_id=plan.shot_prefix + start,
+    )
+
+
+def _shot_ids(plan: SamplingPlan, start: int, count: int) -> NDArray[np.int64]:
+    return np.arange(start, start + count, dtype=np.int64) + plan.shot_prefix
+
+
+def _validate_shots(plan: SamplingPlan, index: int, shots: ShotBatch) -> None:
+    start, rows = plan.chunk_bounds(index)
+    for role, shape in (
+        ("detectors", (rows, plan.detector_count)), ("global_labels", (rows,)), ("core_labels", (rows, plan.core_count)),
+    ):
+        bits = getattr(shots, role)
+        if bits.dtype != np.bool_ or bits.shape != shape:
+            raise ArtifactError(f"wrong shape or bit dtype for {role}")
+    if shots.shot_ids.dtype != np.int64 or not np.array_equal(shots.shot_ids, _shot_ids(plan, start, rows)):
+        raise ArtifactError("wrong, duplicate or reordered shot IDs for shard")
+    _check_label_parity(shots)
+
+
+def _check_label_parity(shots: ShotBatch) -> None:
+    if not np.array_equal(np.logical_xor.reduce(shots.core_labels, axis=1), shots.global_labels):
+        raise ArtifactError("core label parity differs from global label")
+
+
+def _bit_widths(plan: SamplingPlan) -> dict[str, int | None]:
+    return {"detectors": plan.detector_count, "global_labels": 1, "core_labels": plan.core_count, "shot_ids": None}
+
+
+def _shard_identity(plan: SamplingPlan, index: int) -> dict:
+    start, count = plan.chunk_bounds(index)
+    return {
+        "schema_version": DATASET_SCHEMA, "status": "complete", "dataset_id": plan.dataset_id,
+        "index": index, "start": start, "rows": count, "bitorder": BITORDER,
+    }
+
+
+def _write_shard(root: Path, plan: SamplingPlan, index: int, shots: ShotBatch) -> dict:
+    _validate_shots(plan, index, shots)
+    with staged_directory(root) as staging:
+        records = {}
+        for role, width in _bit_widths(plan).items():
+            array = getattr(shots, role)
+            if width is not None:
+                array = np.packbits(array.reshape(len(shots.shot_ids), width), axis=1, bitorder=BITORDER)
+            path = staging / ARRAY_FILES[role]
+            with atomic_file(path) as file:
+                np.save(file, array, allow_pickle=False)
+            records[role] = {
+                **file_integrity(path), "role": role, "filename": path.name, "dtype": array.dtype.name,
+                "shape": list(array.shape), "valid_bits": width,
+            }
+        write_json(staging / "shard.json", {**_shard_identity(plan, index), "arrays": records})
+    return {"index": index, "manifest": file_integrity(root / "shard.json")}
+
+
+def _write_physical(root: Path, bundle: CircuitBundle) -> dict:
+    for name, content in (
+        (PHYSICAL_FILES[0], bundle.original.text),
+        (PHYSICAL_FILES[1], bundle.teacher.text),
+        (PHYSICAL_FILES[2], str(bundle.global_detector_error_model(decompose_errors=True))),
+    ):
+        with atomic_file(root / name) as file:
+            file.write(content.encode("utf-8"))
+    record = {
+        key: value for key, value in asdict(bundle).items()
+        if key not in ("original", "teacher", "spec", "stim_version")
+    }
+    write_json(root / "structure.json", record)
+    return {name: file_integrity(root / name) for name in PHYSICAL_FILES}
+
+
+def write_dataset(
+    path: Path, plan: SamplingPlan, bundle: CircuitBundle, *, provenance: dict,
+    chunks: Iterable[ShotBatch] | None = None,
+) -> None:
+    """Stage a finite immutable dataset and publish its manifest last."""
+    if plan.total_rows is None:
+        raise ValueError("a persistent dataset requires a finite row count")
+    plan.assert_circuit(bundle)
+    count = (plan.total_rows + plan.chunk_rows - 1) // plan.chunk_rows
+    input_batches = iter(chunks) if chunks is not None else (sample_chunk(plan, bundle, index) for index in range(count))
+    with staged_directory(path) as staging:
+        physical = _write_physical(staging, bundle)
+        (staging / "shards").mkdir()
+        inventory = []
+        for index in range(count):
+            try:
+                shots = next(input_batches)
+            except StopIteration as exc:
+                raise ArtifactError("missing rows for the declared dataset") from exc
+            inventory.append(_write_shard(staging / "shards" / str(index), plan, index, shots))
+        if next(input_batches, None) is not None:
+            raise ArtifactError("extra shards beyond the declared dataset")
+        write_json(staging / "manifest.json", {
+            "schema_version": DATASET_SCHEMA, "status": "complete", "dataset_id": plan.dataset_id,
+            "recipe": plan.record(), "physical": physical, "shards": inventory, "provenance": provenance,
+        })
+
+
+@dataclass(frozen=True, slots=True)
+class MappedShard:
+    plan: SamplingPlan
+    index: int
+    detectors: NDArray[np.uint8]
+    global_labels: NDArray[np.uint8]
+    core_labels: NDArray[np.uint8]
+    shot_ids: NDArray[np.int64]
+
+    def read(self, rows: slice | NDArray[np.int64] = slice(None)) -> TrajectoryBatch:
+        ids = self.shot_ids[rows].copy()
+        detectors = np.unpackbits(self.detectors[rows], axis=1, count=self.plan.detector_count, bitorder=BITORDER)
+        global_labels = np.unpackbits(self.global_labels[rows], axis=1, count=1, bitorder=BITORDER)[:, 0]
+        core_labels = np.unpackbits(self.core_labels[rows], axis=1, count=self.plan.core_count, bitorder=BITORDER)
+        shots = ShotBatch(detectors.astype(bool), global_labels.astype(bool), core_labels.astype(bool), ids, None)
+        _check_label_parity(shots)
+        start, _ = self.plan.chunk_bounds(self.index)
+        identities = tuple(
+            TrajectoryID(self.plan.dataset_id, self.index, int(shot) - self.plan.shot_prefix - start) for shot in ids
+        )
+        return TrajectoryBatch(shots, identities)
+
+
+@dataclass(frozen=True, slots=True)
+class MappedDataset:
+    plan: SamplingPlan
+    bundle: CircuitBundle
+    shards: tuple[MappedShard, ...]
+    manifest_sha256: str
+
+
+def _read_shard(root: Path, plan: SamplingPlan, index: int, inventory: dict) -> MappedShard:
+    if inventory["index"] != index:
+        raise ArtifactError("dataset shard identities are duplicated or out of order")
+    path = root / "shard.json"
+    verify_file(path, inventory["manifest"])
+    record = read_json(path)
+    if {key: value for key, value in record.items() if key != "arrays"} != _shard_identity(plan, index):
+        raise ArtifactError("shard identity or schema differs from the dataset manifest")
+    if set(record["arrays"]) != set(ARRAY_FILES):
+        raise ArtifactError("shard must contain exactly the declared array roles")
+    arrays = {}
+    start, count = plan.chunk_bounds(index)
+    for role, width in _bit_widths(plan).items():
+        entry = record["arrays"][role]
+        path = root / ARRAY_FILES[role]
+        if entry["role"] != role or entry["filename"] != path.name:
+            raise ArtifactError(f"reassigned artifact identity for {role}")
+        verify_file(path, {key: entry[key] for key in ("bytes", "sha256")})
+        dtype = np.dtype("uint8") if width is not None else np.dtype("int64")
+        expected_shape = (count, (width + 7) // 8) if width is not None else (count,)
+        array = np.load(path, mmap_mode="r", allow_pickle=False)
+        if (
+            entry["valid_bits"] != width or entry["dtype"] != dtype.name or entry["shape"] != list(expected_shape)
+            or array.dtype != dtype or array.shape != expected_shape
+        ):
+            raise ArtifactError(f"wrong shape, dtype or valid-bit count for {role}")
+        if width is not None and width % 8 and np.any(array[:, -1] >> (width % 8)):
+            raise ArtifactError(f"nonzero padding bits for {role}")
+        arrays[role] = array
+    if not np.array_equal(arrays["shot_ids"], _shot_ids(plan, start, count)):
+        raise ArtifactError("wrong, duplicate or reordered shot IDs for shard")
+    return MappedShard(plan, index, **arrays)
+
+
+def _arrival(record: dict) -> Arrival:
+    return Arrival(record["round"], ArrivalPhase(record["phase"]))
+
+
+def _read_physical(path: Path, plan: SamplingPlan, records: dict) -> CircuitBundle:
+    if set(records) != set(PHYSICAL_FILES):
+        raise ArtifactError("incomplete circuit artifact inventory")
+    for name in PHYSICAL_FILES:
+        verify_file(path / name, records[name])
+    structure = read_json(path / "structure.json")
+    original = CircuitArtifact((path / PHYSICAL_FILES[0]).read_text())
+    teacher = CircuitArtifact((path / PHYSICAL_FILES[1]).read_text())
+    measurements = tuple(Measurement(**{**m, "arrival": _arrival(m["arrival"])}) for m in structure["measurements"])
+    detectors = tuple(
+        Detector(**{**d, "coordinates": tuple(d["coordinates"]), "measurement_indices": tuple(d["measurement_indices"]),
+                    "arrival": _arrival(d["arrival"])})
+        for d in structure["detectors"]
+    )
+    observables = tuple(Observable(**{
+        **o, "logical_support": tuple(o["logical_support"]), "measurement_indices": tuple(o["measurement_indices"]),
+    }) for o in structure["observables"])
+    bundle = CircuitBundle(
+        plan.spec, plan.stim_version, original, teacher, measurements, detectors, observables,
+        tuple(CoreInterval(**c) for c in structure["cores"]), tuple(TemporalCut(**c) for c in structure["cuts"]),
+        structure["preparation_stop"], tuple(structure["round_measurement_instructions"]),
+        structure["destructive_readout_instruction"],
+    )
+    plan.assert_circuit(bundle)
+    return bundle
+
+
+def open_dataset(path: Path, *, expected_split: str | None = None) -> MappedDataset:
+    """Verify all completed shard manifests and memory-map the immutable arrays."""
+    manifest = read_json(path / "manifest.json")
+    if manifest.get("schema_version") != DATASET_SCHEMA or manifest.get("status") != "complete":
+        raise ArtifactError("incomplete dataset or incompatible dataset schema")
+    if not isinstance(manifest.get("provenance"), dict):
+        raise ArtifactError("dataset manifest lacks a provenance record")
+    try:
+        plan = SamplingPlan.from_record(manifest["recipe"])
+        if manifest["dataset_id"] != plan.dataset_id or plan.total_rows is None:
+            raise ArtifactError("dataset identity or row count differs from its recipe")
+        if expected_split is not None and plan.namespace.split != expected_split:
+            raise ArtifactError(f"expected {expected_split} dataset, found {plan.namespace.split}")
+        count = (plan.total_rows + plan.chunk_rows - 1) // plan.chunk_rows
+        if len(manifest["shards"]) != count:
+            raise ArtifactError("dataset shard inventory does not match its complete row count")
+        bundle = _read_physical(path, plan, manifest["physical"])
+        shards = tuple(_read_shard(path / "shards" / str(index), plan, index, entry)
+                       for index, entry in enumerate(manifest["shards"]))
+        return MappedDataset(plan, bundle, shards, str(file_integrity(path / "manifest.json")["sha256"]))
+    except ArtifactError:
+        raise
+    except (KeyError, TypeError, ValueError, OSError, EOFError) as exc:
+        raise ArtifactError(f"invalid dataset manifest or shard payload at {path}") from exc

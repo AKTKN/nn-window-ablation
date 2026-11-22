@@ -131,9 +131,9 @@ def test_invalid_sweep_does_not_publish_any_validation_records(installed_cli, tm
     [
         ("analyze", (), "unavailable until P5 analysis"),
         ("evaluate", (), "unavailable until P5 evaluation"),
-        ("generate", (), "unavailable until P4 dataset generation"),
+        ("generate", (), "generate requires explicit values"),
         ("not-a-command", (), "unknown command"),
-        ("train", (), "unavailable until P4 training"),
+        ("train", (), "train requires explicit values"),
         ("validate", ("runtime.intraop_threads=9",), "exceeding runtime.allocated_cpus=8"),
     ],
 )

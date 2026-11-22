@@ -123,21 +123,23 @@ Write each shard to a temporary path, finish and checksum it, then rename it int
 
 Use sharded, uncompressed `.npy` files containing packed `uint8` arrays. For a shard with $N$ shots and $M$ detector bits per shot, the detector payload is $N\lceil M/8\rceil$ bytes, excluding the small file header. Store rows as shots, pack along the final axis, and specify `bitorder="little"` in the format. NumPy documents both bit ordering and zero padding in `packbits`; loading a `.npy` array with `mmap_mode="r"` permits access to selected portions without reading the whole array. `open_memmap` supports incremental creation of such files. [12–14]
 
-The initial dataset contents should be:
+The P4 dataset contains the following files.
 
 | Artifact | Contents |
 |---|---|
-| `manifest.json` | Dataset identity, physical setting, split, schema versions, source provenance, seed recipe, shard inventory, array shapes, bit counts, and checksums. |
+| `manifest.json` | Dataset identity, physical setting, split, schema versions, source provenance, seed recipe, and checksummed shard inventory. |
 | `circuit_global.stim`, `global.dem` | The physical experiment and its original global-only decoding model. |
 | `circuit_teacher.stim` | The same physical operations with the teacher-label annotations. |
-| `structure.json` and numeric metadata arrays | Cut locations, detector availability, coordinate mapping, observable meanings, and allowed core queries. |
+| `structure.json` | Cut locations, detector availability, coordinate mapping, and observable meanings. |
+| `shards/<id>/shard.json` | Row and array roles, shapes, valid bits, byte lengths, and checksums. |
 | `shards/<id>/detectors.npy` | Packed raw detector events. |
 | `shards/<id>/global_observables.npy` | Packed global logical labels. |
 | `shards/<id>/core_labels.npy` | Packed labels for the fixed 12-core partition, with $c=d$. |
+| `shards/<id>/shot_ids.npy` | Numeric join keys within the paired dataset. |
 
-The initial schema fixes $c=d$ and stores these per-core labels directly. Changing buffers does not change the core partition or require new labels. Labels at every round cut would support later core-width experiments, but are a separate schema extension rather than an initial storage requirement. Padding bits and the number of valid bits must be specified separately. A shot identifier can be the tuple `(dataset_id, shard_id, row_index)`; duplicating it in every array is unnecessary.
+The initial schema fixes $c=d$ and stores these per-core labels directly. Changing buffers does not change the core partition or require new labels. Labels at every round cut would support later core-width experiments. Padding bits and the number of valid bits are specified separately. The authoritative shot identifier is the tuple `(dataset_id, shard_id, row_index)`.
 
-Unpack only the minibatch and temporal columns required for the current operation. Keep graph objects transient initially. A persistent graph cache would duplicate data for different windows and feature versions; introduce one only after profiling shows that graph construction limits throughput.
+Unpack the selected minibatch and crop the raw observations to the temporal columns allowed for each query before building graphs. Keep graph objects transient initially. Introduce a persistent graph cache only after profiling shows that graph construction limits throughput.
 
 ### 5.2 Training data and reproducibility
 
@@ -164,7 +166,7 @@ The five commands have the following proposed contracts:
 | Command | Input and result |
 |---|---|
 | `generate` | Physical setting, split, seed recipe, and shot count; produces immutable detector/label shards and a manifest. |
-| `train` | Model and training-context configuration plus a training source and validation dataset; produces checkpoints and learning records. |
+| `train` | Model and training-context configuration plus an explicit budget and training source. Produces resumable checkpoints and a run manifest. |
 | `evaluate` | Checkpoint or baseline, fixed dataset, and observation policy; produces aligned predictions and metrics. |
 | `analyze` | Completed evaluation records; produces paired statistics, tables, and figures. |
 | `validate` | Configuration, dataset, or checkpoint selection; checks compatibility and the relevant scientific invariants. |
@@ -259,15 +261,15 @@ Continuation `training.max_steps` counts new phase-local updates, excluding the 
 
 The statistical condition identifier combines checkpoint provenance with inference mode. In particular, `evaluation.id=S` applied to full, continued-full, fixed-window, and dynamic-window checkpoints denotes S, S+, W, and D, respectively. Record both the inference mode and immutable checkpoint training regime; the caller's current training preset cannot relabel an existing checkpoint.
 
-The first command uses P0's validation workflow. The scientific commands illustrate interfaces for later phases. They assume an active Conda environment, completed storage checks, and validated numerical budgets in the pilot configuration. `pilot_d5` is the default experiment. Artifact paths and dataset identifiers are illustrative.
+`validate`, `generate`, and `train` are implemented through P4. The scientific command examples assume an active Conda environment and explicit numerical budgets. The [bounded P4 example](../README.md#generate-data-and-train) includes the required settings. `pilot_d5` is the default experiment. Artifact paths and dataset identifiers are illustrative.
 
 ```bash
 nnwa validate experiment=pilot_d5 runtime=local_cpu
 nnwa generate experiment=pilot_d5 runtime=cpu data.split=validation
 nnwa generate experiment=pilot_d5 runtime=cpu data.split=test
 nnwa train experiment=pilot_d5 runtime=cpu training=full_closed seed=101
-nnwa evaluate --multirun experiment=pilot_d5 runtime=cpu evaluation=G,F,S checkpoint.path=/runs/pilot_d5/full_closed/101/model.pt data.split=test data.id=pilot_d5_test_v1
-nnwa train --multirun experiment=pilot_d5 runtime=cpu training=continued_full,fixed_window,dynamic_window checkpoint.init_from=/runs/pilot_d5/full_closed/101/model.pt seed=101
+nnwa evaluate --multirun experiment=pilot_d5 runtime=cpu evaluation=G,F,S checkpoint.path=/runs/pilot-base/checkpoint.pt data.split=test data.id=pilot_d5_test_v1
+nnwa train --multirun experiment=pilot_d5 runtime=cpu training=continued_full,fixed_window,dynamic_window checkpoint.init_from=/runs/pilot-base/checkpoint.pt seed=101
 nnwa analyze experiment=pilot_d5 runtime=local_cpu analysis=primary
 ```
 

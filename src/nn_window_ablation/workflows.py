@@ -15,8 +15,6 @@ from .config import ConfigError, ResolvedConfig, require_execution_config, valid
 
 
 UNAVAILABLE_WORKFLOWS = {
-    "generate": "P4 dataset generation (after P1 circuit sampling)",
-    "train": "P4 training",
     "evaluate": "P5 evaluation",
     "analyze": "P5 analysis",
 }
@@ -31,6 +29,11 @@ class ValidationJob:
 
 def check_workflow(command: str, config: ResolvedConfig) -> None:
     if command == "validate":
+        return
+    if command in ("generate", "train"):
+        from .execution import check_execution
+
+        check_execution(command, config)
         return
     message = f"nnwa {command} is unavailable until {UNAVAILABLE_WORKFLOWS[command]} is implemented"
     try:

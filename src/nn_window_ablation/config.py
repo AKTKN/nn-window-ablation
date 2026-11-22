@@ -94,6 +94,7 @@ class RuntimeConfig:
 @dataclass
 class DataConfig:
     family_id: str
+    replicate: int
     id: str | None
     split: str
     shots: int | None
@@ -129,9 +130,12 @@ class TrainingConfig:
     data_stream_phase: str
     max_steps: int | None
     batch_size: int | None
+    microbatch_size: int | None
     learning_rate: float | None
     optimizer: str | None
     scheduler: str | None
+    scheduler_step_size: int | None
+    scheduler_gamma: float | None
     reset_optimizer_at_start: bool
     checkpoint_policy: str
     dynamic_buffers: DynamicBuffersConfig
@@ -249,8 +253,8 @@ def resolve_config(config: DictConfig, *, invocation_dir: Path) -> ResolvedConfi
         for group, names in {
             "code": ("distance", "rounds_per_distance"),
             "runtime": ("processes", "intraop_threads", "interop_threads", "allocated_cpus"),
-            "data": ("num_workers", "sampling_processes", "shots", "shard_shots", "training_chunk_shots"),
-            "training": ("max_steps", "batch_size"),
+            "data": ("replicate", "num_workers", "sampling_processes", "shots", "shard_shots", "training_chunk_shots"),
+            "training": ("max_steps", "batch_size", "microbatch_size", "scheduler_step_size"),
             "analysis": ("bootstrap_replicates",),
         }.items():
             for name in names:
@@ -322,6 +326,8 @@ def _validate_settings(config: ResolvedConfig) -> None:
         raise ConfigError("window and data settings must preserve the study's observation policy")
     if config.checkpoint.init_from is not None and config.checkpoint.resume_from is not None:
         raise ConfigError("checkpoint.init_from and checkpoint.resume_from are mutually exclusive")
+    if config.data.replicate < 0:
+        raise ConfigError("data.replicate must be nonnegative")
     _validate_budgets(config)
     validate_cpu_budget(config.runtime, config.data)
 
@@ -333,7 +339,10 @@ def _validate_budgets(config: ResolvedConfig) -> None:
         ("data.training_chunk_shots", config.data.training_chunk_shots),
         ("training.max_steps", config.training.max_steps),
         ("training.batch_size", config.training.batch_size),
+        ("training.microbatch_size", config.training.microbatch_size),
         ("training.learning_rate", config.training.learning_rate),
+        ("training.scheduler_step_size", config.training.scheduler_step_size),
+        ("training.scheduler_gamma", config.training.scheduler_gamma),
         ("analysis.bootstrap_replicates", config.analysis.bootstrap_replicates),
     ):
         if value is not None and (value <= 0 or isinstance(value, float) and not isfinite(value)):
@@ -389,6 +398,8 @@ def require_execution_config(config: ResolvedConfig, command: str) -> None:
     if command == "train" and config.training.initialization == "full_checkpoint":
         if config.checkpoint.init_from is None and config.checkpoint.resume_from is None:
             fields += ("checkpoint.init_from",)
+    if command == "train" and config.training.scheduler == "step":
+        fields += ("training.scheduler_step_size", "training.scheduler_gamma")
 
     missing = []
     for field in ("runtime.allocated_cpus", *fields):

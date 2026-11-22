@@ -10,9 +10,12 @@ data_stream_phase: continuation
 # Additional updates in this phase; a parent checkpoint step is not included.
 max_steps: null
 batch_size: null
+microbatch_size: null
 learning_rate: null
 optimizer: null
 scheduler: null
+scheduler_step_size: null
+scheduler_gamma: null
 # New phase only; resume restores the saved optimizer instead.
 reset_optimizer_at_start: true
 checkpoint_policy: fixed_updates

@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated 2026-11-23. P0 through P3 are implemented and verified locally.
+Last updated 2026-11-23. P0 through P4 are implemented and verified locally.
 
 ## Delivered structure
 
@@ -9,9 +9,9 @@ configuration, packaged Hydra presets, and CPU runtime checks. The simulator
 builds the original and annotated Stim circuits and samples aligned detector
 bits and logical labels. The window pipeline selects permitted raw detector
 bits and batches Lange-compatible graphs with label-independent metadata.
-The shared query decoder supports finite CPU forward/backward steps and
-model checkpoint payloads. Persistent training, statistical evaluation,
-and campaign orchestration await their implementation phases.
+The shared query decoder supports CPU forward/backward steps. P4 adds immutable
+datasets, fixed-update training, and exact CPU checkpoint replay. Statistical
+evaluation and campaign orchestration await their implementation phases.
 
 ## GitHub publication
 
@@ -35,7 +35,7 @@ checked byte for byte after removing them from the Git index.
 | P1 | Physical circuit, clean cuts, exact global/core labels | Implemented and verified locally on the finite fixtures. |
 | P2 | Observation windows and features without future leakage | Implemented and independently verified locally. |
 | P3 | Lange model adapter, shared queries, CPU profile | Implemented and independently verified locally. Allocated-node profile pending. |
-| P4 | Datasets, training, checkpoints, deterministic resume | Not implemented. |
+| P4 | Datasets, training, checkpoints, deterministic resume | Implemented and independently verified locally. Allocated-node checks pending. |
 | P5 | Paired G/F/S evaluation and uncertainty | Not implemented. |
 | P6 | Matched S+/W/D continuation | Not implemented. |
 | P7 | PBS campaign, export, and local re-analysis | Not implemented; script templates only. |
@@ -45,6 +45,17 @@ The scientific pilot is $d=5$; a small $d=3$ unit fixture is permitted in P1 but
 not a required training stage or the pilot.
 
 ## Validation record
+
+### P4
+
+The independent cumulative run passed all 152 ordinary tests. The full
+distance-5 decoder replayed four declared Adam updates exactly after a
+two-update interruption, including consumed identities, model and optimizer
+state, RNG state, and the next data position. The data checks verified paired
+label round trips, retained zero-event shots, and rejection of corrupted
+shards. The phase added a separate model-only terminal load for evaluation.
+The compute-node environment and filesystem, main budgets, and decoder
+performance remain pending. [P4 verification](docs/verification/P4.md)
 
 ### P3
 

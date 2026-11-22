@@ -30,15 +30,24 @@ environment variables before the typed resolver checks the values [2].
 `training.initialization=random` applies to the initial full-context model.
 Continuation groups require a full study checkpoint through
 `checkpoint.init_from`. `checkpoint.path` selects a model for evaluation.
-`checkpoint.resume_from` is reserved for continuing the same interrupted run
-with its restored optimizer and data stream in P4. `init_from` and
+`checkpoint.resume_from` continues the same interrupted run with its
+restored optimizer and data stream. `init_from` and
 `resume_from` are mutually exclusive.
 
 `training.max_steps`, `training.batch_size`, `training.learning_rate`, optimizer
 and scheduler choices, and data sizes remain null until the pilot choices are
-made. `validate` accepts unresolved budgets for inspection. Workflow readiness
-requires explicit values for the fields each command uses. Later implementations must document
-explicit choices such as a deliberately disabled scheduler.
+made. `validate` accepts unresolved budgets for inspection. `generate` requires
+`data.shots` and `data.shard_shots`, and uses `data.split` to select a set of
+complete trajectories. `train` accepts `training.optimizer=sgd` or `adam` and
+`training.scheduler=none` or `step`. The `step` scheduler requires
+`training.scheduler_step_size` in updates and `training.scheduler_gamma`.
+`training.batch_size` is the effective trajectory count per update, and
+`training.microbatch_size` defaults to that count.
+
+`data.train_source=generated_chunks` requires `data.training_chunk_shots`.
+`data.train_source=stored_shards` requires `data.id` for a finalized train
+split with a matching circuit, seed, family, replicate, and training phase.
+`data.replicate` is an integer namespace component and defaults to zero.
 
 The CPU profile's 16 intra-operation threads are an initial benchmark candidate,
 not an established optimum. Its candidate sweep is 1, 8, 16, 32, 48, and 96 threads,
@@ -64,9 +73,10 @@ The CLI supplies a UUID-based `run_name` before invoking Hydra when none is
 given. An explicit name may contain ASCII letters, digits, dots, underscores,
 and hyphens, must begin with a letter or digit, and must be at most 128
 characters with no trailing dot. The command reserves a new name exclusively.
-To inspect resume settings, use a new validation run name and the
-`checkpoint.resume_from` path. P4 will check the saved run identity when
-restoring state.
+To resume training, repeat the original `run_name`, roots, and resolved
+settings with `checkpoint.resume_from` pointing to the run's `checkpoint.pt`.
+For a continuation originally started with `checkpoint.init_from`, omit
+that argument when resuming. The saved checkpoint records the parent.
 
 Hydra's basic launcher composes each sweep child in a temporary directory.
 Records are published after the sweep passes validation, with one directory
