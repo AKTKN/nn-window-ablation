@@ -9,6 +9,8 @@ core_sampling: uniform
 data_stream_phase: base
 # Additional updates in this phase; a parent checkpoint step is not included.
 max_steps: null
+log_every_updates: 100
+force_large_log: false
 batch_size: null
 microbatch_size: null
 learning_rate: null

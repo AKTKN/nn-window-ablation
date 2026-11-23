@@ -131,7 +131,13 @@ def test_real_d5_gradients_unused_adam_and_world_size_one(tmp_path, compose_sett
         paths = [execution.train_workflow(resolved(*_options("serial", 0)))]
     monkeypatch.setattr(ddp_launch, "_rank_train", capture_rank)
     for world, name in enumerate(("one", "two"), 1):
-        paths.append(execution.train_workflow(resolved(*_options(name, world))))
+        path = execution.train_workflow(resolved(*_options(name, world), "training.log_every_updates=2"))
+        paths.append(path)
+        logs = list(path.parent.glob("train-attempts/*/rank-*.jsonl"))
+        assert len(logs) == world
+        for log in logs:
+            events = map(json.loads, log.read_text().splitlines())
+            assert [row["update"] for row in events if row["event"] == "update"] == [2]
     states = list(map(load_checkpoint, paths))
     model = load_evaluation_model(paths[-1])
     assert model.rnn.hidden_size == 256 and model.rnn.num_layers == 4

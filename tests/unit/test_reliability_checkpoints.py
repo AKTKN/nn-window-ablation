@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 import random
 
 import pytest
@@ -66,6 +67,23 @@ def _assert_same_state(actual, expected):
         assert_exact(actual[key], expected[key])
     for key in ("trace_prefix", "input_sha256", "controls", "controls_sha256"):
         assert_exact(actual["continuation_audit"][key], expected["continuation_audit"][key])
+
+
+def test_sampled_update_logging_preserves_resume_and_checkpoint_state(cheap_training):
+    reference = execution.train_workflow(cheap_training("reference"))
+    reference_log, = reference.parent.glob("train-attempts/*/rank-0.jsonl")
+    assert all(json.loads(line)["event"] != "update" for line in reference_log.read_text().splitlines())
+
+    config = cheap_training("sampled", "training.log_every_updates=2")
+    path = execution.train_workflow(config, stop_after=3)
+    execution.train_workflow(cheap_training("sampled", "training.log_every_updates=4", resume=True))
+    updates = []
+    for log in path.parent.glob("train-attempts/*/rank-0.jsonl"):
+        events = [json.loads(line) for line in log.read_text().splitlines()]
+        assert events[0]["event"] == "training_start" and events[-1]["event"] == "training_end"
+        updates.extend(event["update"] for event in events if event["event"] == "update")
+    assert sorted(updates) == [2, 4]
+    _assert_same_state(load_checkpoint(path), load_checkpoint(reference))
 
 
 def test_cadences_produce_exact_terminal_state_and_matched_draws(cheap_training, monkeypatch):

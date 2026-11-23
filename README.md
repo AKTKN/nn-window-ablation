@@ -11,6 +11,8 @@ reference for that construction [3].
 **[Getting started on a local CPU](docs/GETTING_STARTED.md)** ·
 **[Install and run on a PBS cluster](docs/04_cluster_workflow.md)**
 
+日本語ドキュメント · [実験条件とセットアップ](docs/ja/experiment_setup.md) · [コマンド別の設定・既定値](docs/ja/cli_parameters.md) · [96 CPUでの大規模実験](docs/ja/cluster_96cpu.md)
+
 ## Current state
 
 P0 provides an installed `nnwa validate` command, typed configuration, and

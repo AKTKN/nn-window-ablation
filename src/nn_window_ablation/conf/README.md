@@ -42,7 +42,12 @@ complete trajectories. `train` accepts `training.optimizer=sgd` or `adam` and
 `training.scheduler=none` or `step`. The `step` scheduler requires
 `training.scheduler_step_size` in updates and `training.scheduler_gamma`.
 `training.batch_size` is the effective trajectory count per update, and
-`training.microbatch_size` defaults to that count.
+`training.microbatch_size` defaults to the batch size local to each rank.
+
+Each rank records a detailed update event every `training.log_every_updates`
+phase updates (default 100). A phase with more than 1,000 projected update
+rows across all ranks requires `training.force_large_log=true`. Checkpoint
+saving uses its own interval. [Japanese CLI reference](../../../docs/ja/cli_parameters.md)
 
 `data.train_source=generated_chunks` requires `data.training_chunk_shots`.
 `data.train_source=stored_shards` requires `data.id` for a finalized train

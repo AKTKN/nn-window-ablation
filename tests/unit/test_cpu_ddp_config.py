@@ -37,6 +37,27 @@ def test_ddp_invalid_budgets_fail_before_output(config, tmp_path, override, mess
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("value", ["0", "-2", "1.5", "null", "true"])
+def test_log_interval_requires_a_positive_integer(config, value):
+    with pytest.raises(ConfigError, match="training.log_every_updates"):
+        config("training.force_large_log=true", f"training.log_every_updates={value}")
+
+
+def test_update_log_preflight(config, tmp_path):
+    from nn_window_ablation.workflows import check_workflow
+
+    single = ("training.execution=single", "runtime.processes=1")
+    for layout, allowed, rejected, rows in [(single, 100099, 100100, 1001), ((), 50099, 50100, 1002)]:
+        for command in ("validate", "train"):
+            check_workflow(command, config(*layout, f"training.max_steps={allowed}"))
+            with pytest.raises(ConfigError, match=f"{rows} update log rows"):
+                check_workflow(command, config(*layout, f"training.max_steps={rejected}"))
+            check_workflow(command, config(*layout, f"training.max_steps={rejected}", "training.force_large_log=true"))
+    with pytest.raises(ConfigError, match="training.force_large_log"):
+        config("training.force_large_log=1")
+    assert not list(tmp_path.iterdir())
+
+
 def test_ddp_placement_uses_affinity_and_visible_cpu_quota(config, monkeypatch):
     request = config("runtime.allocated_cpus=4", "runtime.intraop_threads=2")
     monkeypatch.setattr(ddp_launch.os, "sched_getaffinity", lambda _: {4, 5, 8})

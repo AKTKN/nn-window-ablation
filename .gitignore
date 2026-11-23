@@ -22,3 +22,5 @@ dist/
 *.tar.gz
 *.zip
 scripts/pbs/*.pbs
+issues/
+smoke_run/

@@ -57,6 +57,31 @@ not a required training stage or the pilot.
 
 ## Validation record
 
+### Training update log cadence and Japanese operating guides
+
+All four training presets default to one detailed update event per rank every
+100 phase updates. Preflight rejects more than 1,000 projected update events
+unless `training.force_large_log=true`. Checkpoint and attempt events use their
+own schedules. The local resource audit requests every update explicitly.
+
+In the `nn_window_decoding` environment, the ordinary suite passed 329 tests
+(`-n 8 -m 'not resource_process and not performance and not cluster'`), and
+the process-resource suite passed 34 (`-n 1 -m resource_process`). The tests
+covered both sides of the limit, the override, and per-rank cadence with
+one and two Gloo ranks. A focused checkpoint test also passed after changing
+the interval across a pause from two to four. Model, optimizer, RNG, counters
+and continuation audit identities matched the uninterrupted reference.
+
+The [Japanese setup walkthrough](docs/ja/experiment_setup.md) ran locally
+through training on eight stored trajectories and paired evaluation and
+analysis on five independent validation trajectories. The four-step run
+logged updates 2 and 4. Every command in the
+[96-CPU guide](docs/ja/cluster_96cpu.md) passed its configuration preflight.
+The installed train CLI rejected 49,920 projected rows before creating the
+run. The validate CLI accepted both the 960-row plan and the explicit
+large-log override. Throughput and peak memory on a 96-CPU node remain
+unmeasured. [Command and parameter reference](docs/ja/cli_parameters.md)
+
 ### Multicore Phase 4
 
 The generation checks passed in the cumulative suites of 322 ordinary and

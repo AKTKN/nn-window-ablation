@@ -1,6 +1,6 @@
 """Dataset and training workflows over resolved configuration and explicit paths."""
 
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -9,7 +9,7 @@ from time import perf_counter, process_time
 from uuid import uuid4
 
 from .artifacts import ArtifactError, exclusive_lock, file_integrity, verify_file, write_json
-from .config import ConfigError, ResolvedConfig, require_execution_config, validate_run_name
+from .config import ConfigError, ResolvedConfig, require_execution_config, validate_run_name, validate_update_log_budget
 from .continuation import CONTINUATION_ARMS, TRAINING_REGIMES
 from .evaluation_pool import append_event, observe_process
 from .runtime import configure_cpu_runtime
@@ -43,6 +43,7 @@ def check_execution(command: str, config: ResolvedConfig) -> None:
         if data.sampling_processes == 1 and data.sampling_max_in_flight not in (None, 1):
             raise ConfigError("serial generation permits one in-flight shard")
         return
+    validate_update_log_budget(config)
     if data.split != "train":
         raise ConfigError("optimization requires data.split=train")
     if data.train_source not in ("generated_chunks", "stored_shards"):
@@ -104,7 +105,7 @@ def check_matched_sweep(configs: list[ResolvedConfig]) -> None:
             shared = {key: record[key] for key in ("code", "noise", "window", "model", "data", "runtime")}
             shared["training"] = {
                 key: value for key, value in record["training"].items()
-                if key not in ("name", "core_context", "dynamic_buffers")
+                if key not in ("name", "core_context", "dynamic_buffers", "log_every_updates", "force_large_log")
             }
             shared["parent"] = record["checkpoint"]["init_from"]
             shared["data_root"] = record["paths"]["data_root"]
@@ -216,7 +217,7 @@ def _terminal_validation(trainer, objective, mapped) -> dict:
 
 
 def _resume_contract(record: dict) -> dict:
-    training = record["training"]
+    training = {k: v for k, v in record["training"].items() if k not in ("log_every_updates", "force_large_log")}
     return {
         **record, "checkpoint": {**record["checkpoint"], "resume_from": None, "init_from": None},
         "data": {key: value for key, value in record["data"].items() if key != "sampling_max_in_flight"},
@@ -294,7 +295,7 @@ def _run_training(
 
 
 @contextmanager
-def _training_log(directory, started, startup, group):
+def _training_log(directory, started, startup, group, settings):
     owner = group is None or group.owner
     rank = 0 if group is None else group.rank
     attempt = None
@@ -307,6 +308,7 @@ def _training_log(directory, started, startup, group):
     append_event(
         log, "training_start", rank=rank, world_size=1 if group is None else group.world_size, timings=startup,
         process=observe_process(), launcher_pid=None if group is None else group.launcher_pid,
+        log_every_updates=settings.log_every_updates, force_large_log=settings.force_large_log,
         spawn_seconds=None if group is None else started - group.launched,
     )
     try:
@@ -421,7 +423,7 @@ def _train_stream(config, stream, *, overrides, sweep_index, stop_after, startup
             for entry in directory.iterdir():
                 if re.fullmatch(r"\.(?:checkpoint\.pt|run\.json)\.[a-z0-9_]{8}", entry.name) and entry.is_file():
                     entry.unlink()
-        log = stack.enter_context(_training_log(directory, started, startup, group))
+        log = stack.enter_context(_training_log(directory, started, startup, group, settings))
         with capture_spans() as preparation:
             if resume is not None:
                 with span("checkpoint_restore"):
@@ -492,13 +494,16 @@ def _train_stream(config, stream, *, overrides, sweep_index, stop_after, startup
             })
         cadence = config.checkpoint.save_every_updates
         while trainer.phase_updates < stop:
-            wall, cpu = perf_counter(), process_time()
-            with capture_spans() as timings:
+            log_update = (trainer.phase_updates + 1) % settings.log_every_updates == 0
+            if log_update or audit is not None:
+                wall, cpu = perf_counter(), process_time()
+            with (capture_spans() if log_update else nullcontext()) as timings:
                 trace = trainer.step(objective)
-            append_event(
-                log, "update", update=trace.update, timings=timings, wall_seconds=perf_counter() - wall,
-                cpu_seconds=process_time() - cpu, process=observe_process(),
-            )
+            if log_update:
+                append_event(
+                    log, "update", update=trace.update, timings=timings, wall_seconds=perf_counter() - wall,
+                    cpu_seconds=process_time() - cpu, process=observe_process(),
+                )
             if audit is not None:
                 record_update(
                     audit, trace, detector_tokens=objective.detector_tokens(trace.cores, trace.buffers),

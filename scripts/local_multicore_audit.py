@@ -89,7 +89,7 @@ class Audit:
         self.run(name, "train", count, [
             *self.common(count, dataset.parent.parent, run_root),
             f"run_name={name}", f"data.id={dataset.parent.name}", "data.train_source=stored_shards",
-            f"training.max_steps={updates}", f"training.batch_size={r['global_batch']}",
+            "training.log_every_updates=1", f"training.max_steps={updates}", f"training.batch_size={r['global_batch']}",
             f"training.microbatch_size={r['local_microbatch']}", "training.optimizer=adam",
             f"training.learning_rate={r['learning_rate']}", f"training.scheduler={r['scheduler']}",
             f"training.scheduler_step_size={r['scheduler_step_size']}", f"training.scheduler_gamma={r['scheduler_gamma']}",

@@ -143,6 +143,8 @@ class TrainingConfig:
     dynamic_buffers: DynamicBuffersConfig
     execution: str = "single"
     ddp_timeout_seconds: int = 120
+    log_every_updates: int = 100
+    force_large_log: bool = False
 
 
 @dataclass
@@ -283,6 +285,10 @@ def resolve_config(config: DictConfig, *, invocation_dir: Path) -> ResolvedConfi
             raise ConfigError("run_name must be a string")
         if type(raw["evaluation"].get("resume", False)) is not bool:
             raise ConfigError("evaluation.resume must be boolean")
+        if type(raw["training"].get("log_every_updates", 100)) is not int:
+            raise ConfigError("training.log_every_updates must be a positive integer")
+        if type(raw["training"].get("force_large_log", False)) is not bool:
+            raise ConfigError("training.force_large_log must be boolean")
         validate_run_name(raw["run_name"])
         for group, names in (("paths", ("data_root", "run_root")), ("checkpoint", ("path", "init_from", "resume_from"))):
             for name in names:
@@ -358,6 +364,8 @@ def _validate_settings(config: ResolvedConfig) -> None:
         raise ConfigError("data.replicate must be nonnegative")
     if config.training.execution not in ("single", "ddp") or config.training.ddp_timeout_seconds < 1:
         raise ConfigError("training requires execution=single or ddp and positive ddp_timeout_seconds")
+    if config.training.log_every_updates < 1:
+        raise ConfigError("training.log_every_updates must be a positive integer")
     _validate_budgets(config)
     validate_cpu_budget(config.runtime, config.data)
 
@@ -389,6 +397,20 @@ def _validate_budgets(config: ResolvedConfig) -> None:
         raise ConfigError("analysis.sparse_rule must be a nonnegative inclusive discordance count")
     if config.analysis.bootstrap_seed is not None and not 0 <= config.analysis.bootstrap_seed < 2**64:
         raise ConfigError("analysis.bootstrap_seed must be an unsigned 64-bit integer")
+
+
+def validate_update_log_budget(config: ResolvedConfig) -> None:
+    settings = config.training
+    if settings.max_steps is None:
+        return
+    ranks = config.runtime.processes if settings.execution == "ddp" else 1
+    rows = ranks * (settings.max_steps // settings.log_every_updates)
+    if rows > 1000 and not settings.force_large_log:
+        raise ConfigError(
+            f"estimated {rows} update log rows across {ranks} rank(s) exceed the limit of 1000 "
+            f"(max_steps={settings.max_steps}, log_every_updates={settings.log_every_updates}); "
+            "increase training.log_every_updates or set training.force_large_log=true"
+        )
 
 
 def validate_cpu_budget(runtime: RuntimeConfig, data: DataConfig) -> int:

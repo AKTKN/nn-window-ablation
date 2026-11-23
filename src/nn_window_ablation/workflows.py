@@ -11,7 +11,7 @@ import subprocess
 
 from omegaconf import OmegaConf
 
-from .config import ConfigError, ResolvedConfig, validate_cpu_budget, validate_run_name
+from .config import ConfigError, ResolvedConfig, validate_cpu_budget, validate_run_name, validate_update_log_budget
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,7 @@ class ValidationJob:
 
 def check_workflow(command: str, config: ResolvedConfig) -> None:
     if command == "validate":
+        validate_update_log_budget(config)
         return
     if command in ("generate", "train"):
         from .execution import check_execution
