@@ -1,0 +1,9 @@
+id: paired
+query: global_and_all_cores
+context: paired
+aggregation: identity_and_xor
+threshold: 0.5
+reset_recurrent_state_per_query: true
+update_model_state: false
+batch_size: 1
+matching: false

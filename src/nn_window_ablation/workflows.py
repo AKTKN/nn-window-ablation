@@ -11,13 +11,7 @@ import subprocess
 
 from omegaconf import OmegaConf
 
-from .config import ConfigError, ResolvedConfig, require_execution_config, validate_cpu_budget, validate_run_name
-
-
-UNAVAILABLE_WORKFLOWS = {
-    "evaluate": "P5 evaluation",
-    "analyze": "P5 analysis",
-}
+from .config import ConfigError, ResolvedConfig, validate_cpu_budget, validate_run_name
 
 
 @dataclass(frozen=True)
@@ -35,12 +29,9 @@ def check_workflow(command: str, config: ResolvedConfig) -> None:
 
         check_execution(command, config)
         return
-    message = f"nnwa {command} is unavailable until {UNAVAILABLE_WORKFLOWS[command]} is implemented"
-    try:
-        require_execution_config(config, command)
-    except ConfigError as exc:
-        raise ConfigError(f"{message}. {exc}.") from exc
-    raise ConfigError(message)
+    from .paired_workflows import check_paired_execution
+
+    check_paired_execution(command, config)
 
 
 def reserve_run_directory(config: ResolvedConfig) -> Path:

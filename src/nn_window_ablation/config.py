@@ -150,6 +150,8 @@ class EvaluationConfig:
     threshold: float
     reset_recurrent_state_per_query: bool
     update_model_state: bool
+    batch_size: int
+    matching: bool
 
 
 @dataclass
@@ -159,8 +161,11 @@ class AnalysisConfig:
     ler_interval: str
     paired_interval: str
     sparse_interval: str
-    sparse_rule: str | None
+    sparse_rule: int | None
     bootstrap_replicates: int | None
+    bootstrap_seed: int | None
+    ratio_min_denominator_failures: int | None
+    predictions: list[str]
     contrasts: list[str]
     pool_training_seeds_as_independent_shots: bool
 
@@ -247,7 +252,7 @@ def resolve_config(config: DictConfig, *, invocation_dir: Path) -> ResolvedConfi
     """Validate a composed task configuration without creating run artifacts."""
     try:
         raw = OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
-        for group in ("code", "runtime", "data", "training", "analysis", "paths", "checkpoint"):
+        for group in ("code", "runtime", "data", "training", "evaluation", "analysis", "paths", "checkpoint"):
             if not isinstance(raw.get(group), dict):
                 raise ConfigError(f"{group} must be a mapping")
         for group, names in {
@@ -255,7 +260,8 @@ def resolve_config(config: DictConfig, *, invocation_dir: Path) -> ResolvedConfi
             "runtime": ("processes", "intraop_threads", "interop_threads", "allocated_cpus"),
             "data": ("replicate", "num_workers", "sampling_processes", "shots", "shard_shots", "training_chunk_shots"),
             "training": ("max_steps", "batch_size", "microbatch_size", "scheduler_step_size"),
-            "analysis": ("bootstrap_replicates",),
+            "evaluation": ("batch_size",),
+            "analysis": ("bootstrap_replicates", "bootstrap_seed", "sparse_rule", "ratio_min_denominator_failures"),
         }.items():
             for name in names:
                 value = raw[group][name]
@@ -270,6 +276,9 @@ def resolve_config(config: DictConfig, *, invocation_dir: Path) -> ResolvedConfi
                     continue
                 if type(value) is not str or not value.strip() or "\0" in value:
                     raise ConfigError(f"{group}.{name} must be a nonempty path")
+        predictions = raw["analysis"]["predictions"]
+        if type(predictions) is not list or any(type(value) is not str or not value.strip() or "\0" in value for value in predictions):
+            raise ConfigError("analysis.predictions must list nonempty prediction manifest paths")
         typed = OmegaConf.merge(OmegaConf.structured(ResolvedConfig), raw)
         resolved = cast(ResolvedConfig, OmegaConf.to_object(typed))
     except (OmegaConfBaseException, KeyError) as exc:
@@ -283,6 +292,7 @@ def resolve_config(config: DictConfig, *, invocation_dir: Path) -> ResolvedConfi
         value = getattr(resolved.checkpoint, field)
         if value is not None:
             setattr(resolved.checkpoint, field, resolve_path(value, invocation_dir))
+    resolved.analysis.predictions = [str(resolve_path(Path(path), invocation_dir)) for path in resolved.analysis.predictions]
     return resolved
 
 
@@ -344,11 +354,17 @@ def _validate_budgets(config: ResolvedConfig) -> None:
         ("training.scheduler_step_size", config.training.scheduler_step_size),
         ("training.scheduler_gamma", config.training.scheduler_gamma),
         ("analysis.bootstrap_replicates", config.analysis.bootstrap_replicates),
+        ("analysis.ratio_min_denominator_failures", config.analysis.ratio_min_denominator_failures),
+        ("evaluation.batch_size", config.evaluation.batch_size),
     ):
         if value is not None and (value <= 0 or isinstance(value, float) and not isfinite(value)):
             raise ConfigError(f"{name} must be positive when provided")
     if not 0 < config.analysis.confidence_level < 1:
         raise ConfigError("analysis.confidence_level must be in (0, 1)")
+    if config.analysis.sparse_rule is not None and config.analysis.sparse_rule < 0:
+        raise ConfigError("analysis.sparse_rule must be a nonnegative inclusive discordance count")
+    if config.analysis.bootstrap_seed is not None and not 0 <= config.analysis.bootstrap_seed < 2**64:
+        raise ConfigError("analysis.bootstrap_seed must be an unsigned 64-bit integer")
 
 
 def validate_cpu_budget(runtime: RuntimeConfig, data: DataConfig) -> int:
@@ -393,7 +409,7 @@ def require_execution_config(config: ResolvedConfig, command: str) -> None:
             "data.training_chunk_shots" if config.data.train_source == "generated_chunks" else "data.id",
         ),
         "evaluate": ("data.id", "checkpoint.path"),
-        "analyze": ("analysis.bootstrap_replicates", "analysis.sparse_rule"),
+        "analyze": ("data.id", "analysis.bootstrap_replicates", "analysis.sparse_rule", "analysis.bootstrap_seed"),
     }[command]
     if command == "train" and config.training.initialization == "full_checkpoint":
         if config.checkpoint.init_from is None and config.checkpoint.resume_from is None:

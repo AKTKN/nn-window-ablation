@@ -56,7 +56,7 @@ The initial runtime dependencies should be limited to the packages in the follow
 | PyTorch Geometric | Use `GraphConv`, graph batching, and graph pooling for the adapted Lange encoder. [23, 24] | Crop raw observations first. Check that batching preserves graph, shot, temporal-slot, and query identities, including empty observed slots. |
 | Hydra and OmegaConf | Compose configuration groups, validate/resolve the CLI configuration, record overrides, and enumerate declared sweeps. [15–17, 30–32] | Keep them at the configuration/orchestration boundary; no scientific module imports Hydra. |
 | NumPy | Pack bits into `uint8`, create/read `.npy` shards, memory-map fixed datasets, and manipulate predictions. [12–14] | Record valid bit counts, bit order, shapes, and row identity. |
-| SciPy | Use `binomtest(...).proportion_ci(method="wilson")` for Wilson intervals; `bootstrap(..., paired=True)` resamples common shot indices for paired comparisons. [25, 26] | Set the CI method explicitly. Follow the protocol's conservative exact-count construction for sparse discordances; a marginal LER interval is not a paired-difference interval. |
+| SciPy and NumPy | Use `binomtest(...).proportion_ci` for Wilson and exact binomial intervals. Sample four empirical paired categories with NumPy for the whole-shot bootstrap. [25, 26] | Use the protocol's conservative exact-count construction for sparse discordances. |
 | Matplotlib | Generate reproducible LER, paired-difference, and buffer-dependence figures from recorded results. [27] | Plot stored statistics and their declared intervals; keep plotting independent of model execution. |
 | Conda and pip | Create an isolated Python environment, install the CPU PyTorch candidate, then install the project's `experiment` extra; use `conda run` for explicit batch execution. [3, 4, 38] | The base YAML is not a lock. Validate the actual CPU environment before recording resolved package inventories. |
 | pytest | Run the scientific invariants and minimal execution checks. [28] | Development dependency; tests focus on target, availability, pairing, and checkpoint contracts. |
@@ -167,8 +167,8 @@ The five commands have the following proposed contracts:
 |---|---|
 | `generate` | Physical setting, split, seed recipe, and shot count; produces immutable detector/label shards and a manifest. |
 | `train` | Model and training-context configuration plus an explicit budget and training source. Produces resumable checkpoints and a run manifest. |
-| `evaluate` | Checkpoint or baseline, fixed dataset, and observation policy; produces aligned predictions and metrics. |
-| `analyze` | Completed evaluation records; produces paired statistics, tables, and figures. |
+| `evaluate` | Terminal checkpoint, fixed dataset, and observation policy. Produces aligned predictions and optionally includes an original-DEM baseline. |
+| `analyze` | Completed prediction records and their immutable dataset. Produces paired statistics and CSV tables. |
 | `validate` | Configuration, dataset, or checkpoint selection; checks compatibility and the relevant scientific invariants. |
 
 Configuration groups should correspond to actual experimental choices. The following file paths are relative to `src/nn_window_ablation/conf/` and define the initial group names used by the proposed CLI examples.
@@ -261,14 +261,14 @@ Continuation `training.max_steps` counts new phase-local updates, excluding the 
 
 The statistical condition identifier combines checkpoint provenance with inference mode. In particular, `evaluation.id=S` applied to full, continued-full, fixed-window, and dynamic-window checkpoints denotes S, S+, W, and D, respectively. Record both the inference mode and immutable checkpoint training regime; the caller's current training preset cannot relabel an existing checkpoint.
 
-`validate`, `generate`, and `train` are implemented through P4. The scientific command examples assume an active Conda environment and explicit numerical budgets. The [bounded P4 example](../README.md#generate-data-and-train) includes the required settings. `pilot_d5` is the default experiment. Artifact paths and dataset identifiers are illustrative.
+The scientific command examples assume an active Conda environment and explicit numerical budgets. The [bounded P4 example](../README.md#generate-data-and-train) and [bounded P5 example](../README.md#evaluate-and-analyze-paired-trajectories) include the required settings. `pilot_d5` is the default experiment. Artifact paths and dataset identifiers are illustrative.
 
 ```bash
 nnwa validate experiment=pilot_d5 runtime=local_cpu
 nnwa generate experiment=pilot_d5 runtime=cpu data.split=validation
 nnwa generate experiment=pilot_d5 runtime=cpu data.split=test
 nnwa train experiment=pilot_d5 runtime=cpu training=full_closed seed=101
-nnwa evaluate --multirun experiment=pilot_d5 runtime=cpu evaluation=G,F,S checkpoint.path=/runs/pilot-base/checkpoint.pt data.split=test data.id=pilot_d5_test_v1
+nnwa evaluate experiment=pilot_d5 runtime=cpu evaluation=paired checkpoint.path=/runs/pilot-base/checkpoint.pt data.split=test data.id=pilot_d5_test_v1
 nnwa train --multirun experiment=pilot_d5 runtime=cpu training=continued_full,fixed_window,dynamic_window checkpoint.init_from=/runs/pilot-base/checkpoint.pt seed=101
 nnwa analyze experiment=pilot_d5 runtime=local_cpu analysis=primary
 ```

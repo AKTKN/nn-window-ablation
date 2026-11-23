@@ -15,7 +15,8 @@ local CPU verification. P1 provides the Stim circuit and joint sampler for
 detectors and exact logical labels. P2 provides observation windows,
 Lange-compatible features, and batch assembly. P3 provides the shared query
 decoder, its objective, and a bounded CPU profile. P4 provides immutable
-datasets, fixed-update training, and exact local checkpoint replay.
+datasets, fixed-update training, and exact local checkpoint replay. P5
+provides frozen paired inference and whole-trajectory statistical analysis.
 
 See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for phase status and
 [AGENTS.md](AGENTS.md) for development contracts.
@@ -111,8 +112,28 @@ To train from a finalized train split, specify `data.train_source=stored_shards`
 and its `data.id`. [Configuration](src/nn_window_ablation/conf/README.md) ·
 [P4 verification](docs/verification/P4.md)
 
-`evaluate` and `analyze` are scheduled for P5. For the circuit sampler, see the
-Python API example and local evidence. [P1 verification](docs/verification/P1.md)
+## Evaluate and analyze paired trajectories
+
+Continue in the same scratch directory using the dataset and terminal
+checkpoint above. These sparse and bootstrap settings are for the bounded
+check. The main-study choices remain pending.
+
+```bash
+conda run -n nn_window_decoding nnwa evaluate runtime=local_cpu runtime.allocated_cpus=1 \
+  run_name=pilot-eval evaluation=paired data.id=pilot-test \
+  checkpoint.path=runs/pilot-check/checkpoint.pt
+conda run -n nn_window_decoding nnwa analyze runtime=local_cpu runtime.allocated_cpus=1 \
+  run_name=pilot-stats data.id=pilot-test 'analysis.predictions=[runs/pilot-eval/manifest.json]' \
+  analysis.sparse_rule=1 analysis.bootstrap_replicates=99 analysis.bootstrap_seed=17
+```
+
+Evaluation saves shot identities, packed decisions, and logits. Use
+`evaluation.matching=true` to include the original-DEM PyMatching baseline.
+Analysis writes `report.json`, `rates.csv`, and `contrasts.csv` under its run
+directory. [P5 verification](docs/verification/P5.md)
+
+For the circuit sampler, see the Python API example and local evidence.
+[P1 verification](docs/verification/P1.md)
 
 For buffered observations and graph batching, see the P2 interface and
 independent test results. [P2 verification](docs/verification/P2.md)

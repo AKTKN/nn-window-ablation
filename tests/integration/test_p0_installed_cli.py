@@ -129,8 +129,8 @@ def test_invalid_sweep_does_not_publish_any_validation_records(installed_cli, tm
 @pytest.mark.parametrize(
     ("command", "overrides", "error"),
     [
-        ("analyze", (), "unavailable until P5 analysis"),
-        ("evaluate", (), "unavailable until P5 evaluation"),
+        ("analyze", (), "analyze requires explicit values"),
+        ("evaluate", (), "evaluate requires explicit values"),
         ("generate", (), "generate requires explicit values"),
         ("not-a-command", (), "unknown command"),
         ("train", (), "train requires explicit values"),

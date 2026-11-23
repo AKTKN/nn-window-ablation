@@ -12,7 +12,7 @@ from hydra.types import RunMode
 from omegaconf import DictConfig
 
 from .config import ConfigError, new_run_name, resolve_config
-from .workflows import UNAVAILABLE_WORKFLOWS, ValidationJob, check_workflow, publish_validation, reserve_run_directory
+from .workflows import ValidationJob, check_workflow, publish_validation, reserve_run_directory
 
 
 USAGE = "usage: nnwa {validate,generate,train,evaluate,analyze} [Hydra options and overrides]"
@@ -25,6 +25,12 @@ def _publish_jobs(command: str, jobs: list[ValidationJob], invocation_dir: Path)
 
     if command == "generate":
         return [generate_workflow(job.config, overrides=job.overrides) for job in jobs]
+    if command == "train":
+        workflow = train_workflow
+    else:
+        from .paired_workflows import analyze_workflow, evaluate_workflow
+
+        workflow = evaluate_workflow if command == "evaluate" else analyze_workflow
     if jobs[0].sweep_index is not None:
         first = jobs[0].config
         if any(
@@ -32,9 +38,9 @@ def _publish_jobs(command: str, jobs: list[ValidationJob], invocation_dir: Path)
             or job.config.checkpoint.resume_from is not None
             for job in jobs
         ):
-            raise ConfigError("new training sweep jobs must share their run parent; resume jobs individually")
+            raise ConfigError("new sweep jobs must share their run parent; resume jobs individually")
         reserve_run_directory(first)
-    return [train_workflow(job.config, overrides=job.overrides, sweep_index=job.sweep_index) for job in jobs]
+    return [workflow(job.config, overrides=job.overrides, sweep_index=job.sweep_index) for job in jobs]
 
 
 def main() -> int:
@@ -45,7 +51,7 @@ def main() -> int:
     if command in ("-h", "--help"):
         print(USAGE)
         return 0
-    if command not in ("validate", "generate", "train") and command not in UNAVAILABLE_WORKFLOWS:
+    if command not in ("validate", "generate", "train", "evaluate", "analyze"):
         print(f"nnwa: unknown command {command!r}\n{USAGE}", file=sys.stderr)
         return 2
 
@@ -65,8 +71,9 @@ def main() -> int:
 
     if not any(arg.partition("=")[0].lstrip("+~") == "run_name" for arg in arguments):
         arguments.append(f"run_name={new_run_name()}")
-    if command == "train" and not any(arg.partition("=")[0].lstrip("+~") == "data.split" for arg in arguments):
-        arguments.append("data.split=train")
+    default_split = {"train": "train", "evaluate": "test", "analyze": "test"}.get(command)
+    if default_split is not None and not any(arg.partition("=")[0].lstrip("+~") == "data.split" for arg in arguments):
+        arguments.append(f"data.split={default_split}")
 
     # Hydra writes logs before the task runs. Keep them temporary until all jobs
     # resolve, then reserve the final run identity and publish application records.
@@ -91,6 +98,8 @@ def main() -> int:
                 "validate": "Validated configuration written to",
                 "generate": "Dataset manifest written to",
                 "train": "Training checkpoint written to",
+                "evaluate": "Prediction manifest written to",
+                "analyze": "Analysis report written to",
             }[command]
             for record in records:
                 print(f"{message} {record}")

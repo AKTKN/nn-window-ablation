@@ -13,7 +13,7 @@ CLI field overrides apply after the experiment [1].
 | `model` | `query_gnn_rnn` | Width 256, four GRU layers, common scalar query head. |
 | `training` | `full_closed` | Full-context objective; continuation groups are separate. |
 | `data` | `paired` | Shot identity, storage, split, and data-loader settings. |
-| `evaluation` | `G` | G, F, or S inference from a recorded checkpoint. |
+| `evaluation` | `G` | Individual G/F/S or paired inference from a terminal checkpoint. |
 | `analysis` | `primary` | Whole-shot LER and paired contrasts. |
 | `runtime` | `cpu` | CPU threads/processes independent of scientific conditions. |
 | `experiment` | `pilot_d5` | Initial distance-5 pilot; `paired_d5/paired_d7` are later presets. |
@@ -110,9 +110,20 @@ checkpoints yields S, S+, W, and D, respectively. Preserve both identifiers in
 prediction manifests; do not relabel a checkpoint by a caller's current
 `training` override.
 
-The number of bootstrap replicates and the criterion for using the sparse-count
-interval are also unresolved fields. Fix them before the main test analysis;
-whole trajectories remain the resampling unit under either policy.
+`evaluation=paired` runs G/F/S from one terminal checkpoint on the same held-out
+dataset. Use `evaluation.batch_size` to bound trajectories per forward and
+`evaluation.matching=true` to add PyMatching. `evaluate` and `analyze` default to
+`data.split=test`. Explicit `data.split=validation` selects a validation artifact.
+
+`analyze` uses the same `data.id` and the manifest paths in `analysis.predictions`.
+It requires `analysis.bootstrap_replicates`, `analysis.bootstrap_seed`, and
+`analysis.sparse_rule`. The sparse rule is an inclusive cutoff on the sum of the
+two discordance counts. Choose the main-study values after the pilot and before
+inspecting the main test results. For relative ratios, explicitly set
+`analysis.ratio_min_denominator_failures`. Ratios use the second condition's LER
+as the denominator and are unresolved if that count is below the minimum or any
+resampled denominator is zero. Analysis reports one training seed and replicate
+per invocation. [P5 verification](../../../docs/verification/P5.md)
 
 ## References
 
