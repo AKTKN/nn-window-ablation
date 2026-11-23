@@ -1,5 +1,7 @@
 # PBS templates
 
+[日本語：段階別のPBS投入スクリプトと96 CPU向けYAML](pbs/README.md)
+
 Use `nnwa pbs render --spec job.json --output job.pbs` for validated P7
 job plans and application receipts. Follow the site's submission procedure
 after reviewing the script. [PBS cluster guide](../docs/04_cluster_workflow.md)

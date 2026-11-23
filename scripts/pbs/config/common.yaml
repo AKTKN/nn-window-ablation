@@ -1,0 +1,58 @@
+# 全ジョブで共有するnnwa引数。各行を1個のHydra引数として渡す。
+arguments:
+  - experiment=paired_d5             # 本実験の距離5系列。pilot_d5 / paired_d7 にも切替可。
+  - code=surface_rotated_z           # 回転表面符号のZメモリ回路。
+  - noise=uniform_circuit            # 回路の4種類の誤り確率を共通のpにする。
+  - window=fixed_d                   # 独立したコア、左右バッファ、終端読み出しの規則。
+  - model=query_gnn_rnn              # 全体・コアのクエリに同じGNNと4層GRUを使う。
+  - data=paired                      # 完全な軌跡の観測・正解・IDを対応づけるデータ形式。
+  - runtime=local_cpu                # CPU上のfloat32演算。スレッド数は下記の値。
+  - seed=101                         # データ生成と学習の再現用シード。
+  - data.replicate=0                 # 独立なデータ反復の番号。生成と利用側で揃える。
+  - paths.data_root=./data           # 入力データの親。相対パスの基準は投入元リポジトリ。
+  - paths.run_root=./runs            # モデル・評価・解析結果の親。同じ実験では共通にする。
+  - runtime.intraop_threads=1        # 各プロセスの演算内スレッド数。
+  - runtime.interop_threads=1        # 各プロセスの演算間スレッド数。
+  - data.num_workers=0               # 追加のデータローダー数。現行ワークフローは0。
+
+  # 以下はプリセットから継承する値。変更する項目だけコメントを外す。
+  # - code.distance=5                # 符号距離。paired_d7では7。
+  # - code.rounds_per_distance=12    # 距離当たりの測定ラウンド数。
+  # - noise.probability=0.003        # 各ノイズ箇所に共通の物理誤り率。
+  # - window.core_per_distance=1     # 距離当たりのコア長。主実験では1。
+  # - window.left_per_distance=1     # 左側の観測バッファ幅を距離との比で指定。
+  # - window.right_per_distance=1    # 右側の観測バッファ幅を距離との比で指定。
+  # - data.family_id=paired_d5       # データ系列名。通常はexperimentに追従させる。
+
+  # 以下の科学条件は主実験で固定。値は各プリセットから継承する。
+  # - schema_version=1                     # 設定・記録形式の版。
+  # - study_stage=main                     # paired_d5/d7は本実験、pilot_d5はpilot。
+  # - code.family=surface_code             # 符号の種類。
+  # - code.layout=rotated                  # 格子の配置。
+  # - code.memory_basis=Z                  # メモリ実験の測定基底。
+  # - noise.name=uniform_circuit           # 回路ノイズの種類。
+  # - noise.after_clifford_depolarization=${noise.probability}   # Clifford後の脱分極確率。
+  # - noise.before_round_data_depolarization=${noise.probability} # ラウンド前のデータ脱分極確率。
+  # - noise.before_measure_flip_probability=${noise.probability} # 測定前の反転確率。
+  # - noise.after_reset_flip_probability=${noise.probability}    # リセット後の反転確率。
+  # - window.strategy=independent_core_parity # 独立コアのパリティを合成する方式。
+  # - window.reset_recurrent_state=true     # 独立窓の間でGRU状態をリセット。
+  # - window.final_readout_policy=final_core_only # 終端の破壊的読み出しを最後のコアに割り当てる。
+  # - window.crop_before_features=true     # 窓を切り出してから特徴量を生成。
+  # - model.name=query_gnn_rnn             # クエリ条件付きデコーダ。
+  # - model.upstream_commit=458210ac74ed0047760b8789c169e6b9eff732b8 # 参照バックボーンの版。
+  # - model.graph_channels=[3,64,256]      # グラフ層のチャネル数。
+  # - model.feature_group_rounds=2        # 1特徴グループのラウンド数。
+  # - model.hidden_size=256               # GRUの隠れ状態の次元。
+  # - model.gru_layers=4                  # GRUの層数。
+  # - model.spatial_aggregation=distance_dependent_lange # 符号距離別の空間集約。
+  # - model.query_projection=additive      # クエリの表現を加算。
+  # - model.head=shared_scalar             # 全体・各コアで同じ出力ヘッドを共有。
+  # - model.empty_observation_embedding=learned # 無イベント観測に学習埋め込みを使う。
+  # - data.storage=packed_npy             # ビットを詰めてNumPy形式で保存。
+  # - data.bitorder=little                # ビット詰めの順序。
+  # - data.keep_zero_event_shots=true     # イベントのなかったショットも保持。
+  # - data.label_schema=clean_cut_core_parity_v1 # 全体・コアラベルの定義。
+  # - runtime.device=cpu                  # 計算デバイス。
+  # - runtime.dtype=float32               # モデルの浮動小数点精度。
+  # - runtime.benchmark_threads=[1]       # プロファイル用のスレッド数候補。

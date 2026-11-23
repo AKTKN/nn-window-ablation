@@ -1,0 +1,44 @@
+command: train                     # 実行するnnwaサブコマンド。
+common: common.yaml                # 回路・シード・保存先・スレッドの共通設定。
+arguments:                         # 基本モデルの学習・保存に使う引数。
+  - run_name=base96                # チェックポイントの出力先 runs/base96/。
+  - runtime.allocated_cpus=96      # PBSのCPU割当。
+  - runtime.processes=96           # 勾配を同期するDDPランク数。
+  - training=full_closed           # 全観測で基本モデルをランダム初期値から学習。
+  - training.execution=ddp         # CPU/Glooによるデータ並列学習。
+  - training.ddp_timeout_seconds=120 # ランク間の通信待ち期限（秒）。
+  - data.train_source=stored_shards # 生成済みのtrainシャードを読む。
+  - data.split=train               # 学習用系列。
+  - data.id=train10m               # sample_train.yamlで生成するデータ名。
+  - training.batch_size=192        # 全ランク合計で1更新に使うショット数。
+  - training.microbatch_size=1     # 各ランクが1回の順伝播・逆伝播で処理するショット数。
+  - training.max_steps=52084       # 更新回数。192 × 52,084 = 10,000,128ショット。
+  - training.optimizer=adam        # パラメータの更新アルゴリズム。
+  - training.learning_rate=0.001   # 初期学習率。
+  - training.scheduler=none        # 学習率を一定にする。stepなら次の2項目も設定。
+  - training.scheduler_step_size=null # step使用時、学習率を変更する更新間隔。
+  - training.scheduler_gamma=null  # step使用時、学習率に掛ける係数。
+  - training.log_every_updates=5000 # 更新ログの間隔。96ランク合計で960行。
+  - training.force_large_log=false # trueで1,000更新行を超える設定を許可。
+  - checkpoint.save_every_updates=1000 # 定期チェックポイントを保存する更新間隔。
+  - checkpoint.resume_from=null    # 中断再開時は元のcheckpoint.ptを指定。同じrun名を使う。
+  - checkpoint.init_from=null      # 継続学習アームを新規開始する場合の親モデル。
+  - training.validation_data_id=null # 継続学習の終端で評価するvalidationデータ名。
+
+  # 以下は選んだ学習プリセットの値。継続学習では対応するプリセットがまとめて切り替える。
+  # - data.training_chunk_shots=null      # 単一プロセスで逐次生成する場合のチャンクサイズ。
+  # - training.name=full_closed           # 学習方式の識別子。
+  # - training.initialization=random      # 初期重みの生成方法。
+  # - training.data_stream_phase=base     # 基本学習・継続学習のデータ系列を区別。
+  # - training.global_context=full_closed # 全体クエリが使う観測範囲。
+  # - training.core_context=full_closed   # コアクエリが使う観測範囲。
+  # - training.sampled_cores_per_trajectory=1 # 各ショットの学習に選ぶコアの個数。
+  # - training.core_sampling=uniform      # 学習対象のコアを一様に抽選。
+  # - training.core_loss_weight=1.0       # コア損失に掛ける重み。
+  # - training.loss_normalization=one_plus_core_loss_weight # 全体損失とコア損失の正規化。
+  # - training.reset_optimizer_at_start=true # 新規フェーズ開始時に最適化状態を初期化。
+  # - training.checkpoint_policy=fixed_updates # 固定の更新予算で終端を決定。
+  # - training.dynamic_buffers.enabled=false # D方式で可変の窓バッファを使う。
+  # - training.dynamic_buffers.ratios=[0,0.5,1.0] # 可変バッファ幅の候補（距離比）。
+  # - training.dynamic_buffers.distribution=independent_uniform # 左右の幅を独立に一様抽選。
+  # - training.dynamic_buffers.sampling_unit=minibatch # 全ランク共通の1更新単位で抽選。

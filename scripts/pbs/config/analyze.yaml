@@ -1,0 +1,23 @@
+command: analyze                   # 実行するnnwaサブコマンド。
+common: common.yaml                # 回路と保存先を評価と揃える。
+arguments:                         # 対応のある予測を集計する引数。
+  - run_name=summary96             # report.json、rates.csv、contrasts.csvの出力名。
+  - runtime.allocated_cpus=1       # 解析用CPU割当。ローカルでも1 CPUで実行可。
+  - runtime.processes=1            # 集計プロセス数。
+  - data.split=test                # evaluateと同じ系列。
+  - data.id=test10m                # evaluateと同じ評価用データ名。
+  - analysis=primary               # G/F/Sのショット単位の対応比較。
+  - 'analysis.predictions=["${paths.run_root}/paired96/manifest.json"]' # 評価で保存した予測manifestのリスト。
+  - 'analysis.contrasts=[S_minus_G,F_minus_G,S_minus_F]' # 計算する論理エラー率の差。
+  - analysis.sparse_rule=1         # 不一致数がこの値以下なら疎な場合の区間推定を使う。
+  - analysis.bootstrap_replicates=9999 # 対応のあるブートストラップの反復数。
+  - analysis.bootstrap_seed=17     # 再標本化用の乱数シード。
+  - analysis.ratio_min_denominator_failures=null # 比も推定する場合の分母側の最小失敗数。
+
+  # 以下はanalysis=primaryの統計手順。
+  # - analysis.unit=whole_trajectory       # 完全なショットを1観測と数える。
+  # - analysis.pool_training_seeds_as_independent_shots=false # 異なる学習seedを独立ショットとして合算しない。
+  # - analysis.confidence_level=0.95       # 区間推定の信頼水準。
+  # - analysis.ler_interval=wilson         # 各方式のエラー率にはWilson区間を使う。
+  # - analysis.paired_interval=paired_bootstrap # 方式間の差をショット対応付きで推定。
+  # - analysis.sparse_interval=conservative_exact_discordances # 不一致が少ない場合の推定法。

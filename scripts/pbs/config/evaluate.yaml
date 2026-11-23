@@ -1,0 +1,25 @@
+command: evaluate                  # 実行するnnwaサブコマンド。
+common: common.yaml                # 回路・シード・保存先・スレッドの共通設定。
+arguments:                         # 凍結モデルで復号する際の引数。
+  - run_name=paired96              # 予測manifestと各シャードの出力名。
+  - runtime.allocated_cpus=96      # PBSのCPU割当。
+  - runtime.processes=1            # 評価を管理する親プロセス数。
+  - data.split=test                # 最終評価用の独立系列。検証用ならvalidation。
+  - data.id=test10m                # sample_test.yamlで生成するデータ名。
+  - 'checkpoint.path=${paths.run_root}/base96/checkpoint.pt' # trainで保存した終端モデル。
+  - evaluation=paired              # G/F/Sを同一の評価ショットで比較。単独方式も選べる。
+  - evaluation.workers=96          # シャードを分担する推論ワーカー数。
+  - evaluation.worker_threads=1    # 各ワーカーの演算スレッド数。
+  - evaluation.max_in_flight=192   # 同時投入する未完了シャードの上限。
+  - evaluation.batch_size=1        # ワーカー内で一度に推論するショット数。
+  - evaluation.matching=false      # trueでMWPMの比較結果も保存する。
+  - evaluation.resume=false        # 中断した同名runの完了シャードを再利用する場合はtrue。
+
+  # 以下はevaluation=pairedが指定する条件。単独のG/F/Sを選ぶときはプリセットを切り替える。
+  # - evaluation.id=paired                # 評価方式の識別子。
+  # - evaluation.query=global_and_all_cores # 全体と12コアの両方を予測。
+  # - evaluation.context=paired           # 同じ軌跡の全観測と窓内観測を比較。
+  # - evaluation.aggregation=identity_and_xor # 全体は直接判定、コア判定はXORで合成。
+  # - evaluation.threshold=0.5            # 予測確率をビットに変換する閾値。
+  # - evaluation.reset_recurrent_state_per_query=true # 独立クエリの間でGRU状態をリセット。
+  # - evaluation.update_model_state=false # 学習済みの重みと状態を固定。

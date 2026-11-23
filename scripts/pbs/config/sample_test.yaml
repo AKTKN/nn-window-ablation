@@ -1,0 +1,13 @@
+command: generate                  # 実行するnnwaサブコマンド。
+common: common.yaml                # 全段階の共通引数。このファイルからの相対パス。
+arguments:                         # 今回の生成だけに適用する引数。
+  - run_name=sample-test96         # 生成ジョブの実行識別名。
+  - runtime.allocated_cpus=96      # PBSがこのジョブに割り当てるCPU数。
+  - runtime.processes=1            # 生成の親プロセス数。
+  - training=full_closed           # 基本学習の系列。継続学習用train生成では対象プリセットを選ぶ。
+  - data.split=test                # 最終評価用の独立した乱数系列。
+  - data.id=test10m                # 保存先のデータ名。利用側のdata.idと揃える。
+  - data.shots=10000000            # 生成する完全な軌跡の総数。
+  - data.shard_shots=2500          # 1シャードのショット数。末尾は端数を許す。
+  - data.sampling_processes=8      # 並列にサンプルを生成するワーカー数。
+  - data.sampling_max_in_flight=16 # 同時に投入する未完了シャード数の上限。

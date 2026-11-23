@@ -57,6 +57,29 @@ not a required training stage or the pilot.
 
 ## Validation record
 
+### PBS stage scripts with YAML arguments
+
+The [Japanese PBS guide](scripts/pbs/README.md) links separate train/test
+generation, training, evaluation and analysis jobs. Each launcher activates
+the Conda environment and passes the shared and stage-specific YAML arguments
+to the installed command. The example requests one host with 96 CPUs for
+generation, training and evaluation, and one CPU for analysis.
+
+All six shell files passed Bash syntax checks. The stage configuration tests
+and existing PBS rendering tests passed locally (15 tests). The five production
+YAML sets passed the corresponding nnwa configuration preflights, including
+the training shot budget and links between datasets, checkpoint and predictions.
+
+A local smoke run executed all five job entry points in the
+`nn_window_decoding` environment using copies of the YAML templates. Two
+samplers generated independent distance-5 train and test sets with four and
+three shots. Two DDP ranks completed two updates and two evaluation workers
+published the paired G/F/S predictions. After copying only the held-out
+dataset and the prediction directory to a separate root, the local analysis
+script reported three shots for each condition. The smoke exercised the shell
+entry points and simulated submission directory. Actual PBS submission, host
+capacity and 96-CPU performance remain unverified.
+
 ### Training update log cadence and Japanese operating guides
 
 All four training presets default to one detailed update event per rank every
