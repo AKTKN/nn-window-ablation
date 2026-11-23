@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import shutil
 import signal
 import stat
 import subprocess
@@ -30,6 +31,13 @@ def _io(pid):
 def _cpu_usage(who):
     usage = resource.getrusage(who)
     return {"user": usage.ru_utime, "system": usage.ru_stime}
+
+
+def _optional(read, path):
+    try:
+        return read(path)
+    except OSError:
+        return None
 
 
 def _record(path, record):
@@ -64,11 +72,14 @@ def _members(group):
             if int(fields[2]) != group:
                 continue
             pid = int(entry.name)
+            affinity = _optional(os.sched_getaffinity, pid)
+            fds = _optional(os.listdir, entry / "fd")
             processes.append({
                 "pid": pid, "ppid": int(fields[1]), "start_ticks": int(fields[19]), "state": fields[0],
                 "rss_bytes": int(fields[21]) * page_size, "native_threads": int(fields[17]),
                 "self_user_ticks": int(fields[11]), "self_system_ticks": int(fields[12]),
-                "affinity": sorted(os.sched_getaffinity(pid)), "fds": len(os.listdir(entry / "fd")),
+                "affinity": None if affinity is None else sorted(affinity),
+                "fds": None if fds is None else len(fds),
             })
         except (OSError, IndexError, ValueError):
             continue
@@ -124,8 +135,8 @@ def _stop_group(process):
             break
         deadline = monotonic() + seconds
         while monotonic() < deadline:
-            process.poll()
-            _reap_group(process.pid)
+            if process.poll() is not None:
+                _reap_group(process.pid)
             if not _members(process.pid):
                 return
             sleep(0.1)
@@ -145,40 +156,59 @@ def measure(argv, directory, cpus, roots=(), temporary=(), *, interval=0.2, time
             memory_limit=6 * 2**30, disk_reserve=4 * 2**30):
     """Monitor one fresh, affinity-confined command and stream its timeline."""
     directory.mkdir(parents=True)
+    scratch = directory.resolve() / "scratch"
+    scratch.mkdir()
     roots, temporary = tuple(roots), tuple(temporary)
-    _record(directory / "command.json", {"command": argv, "cpus": cpus, "timeout_seconds": timeout})
+    _record(directory / "command.json", {
+        "command": argv, "cpus": cpus, "timeout_seconds": timeout, "temp_directory": str(scratch),
+    })
     terminal = directory / "terminal.json"
     restricted = sorted(cpus)
     previous_affinity = os.sched_getaffinity(0)
     own_start = _cpu_usage(resource.RUSAGE_SELF)
     start = monotonic()
-    peaks = {name: 0 for name in ("rss_bytes", "files", "bytes", "temp_files", "temp_bytes", "processes", "fds")}
+    peaks = {name: 0 for name in (
+        "rss_bytes", "files", "bytes", "temp_files", "temp_bytes", "scratch_files", "scratch_bytes", "processes",
+    )}
+    peaks["fds"] = None
     reason = None
     os.sched_setaffinity(0, restricted)
     try:
         with (directory / "stdout.log").open("w") as stdout, (directory / "timeline.jsonl").open("w") as log:
             process = subprocess.Popen(
                 [sys.executable, str(Path(__file__).resolve()), "--stage", str(terminal), *argv],
-                stdout=stdout, stderr=subprocess.STDOUT, start_new_session=True,
+                stdout=stdout, stderr=subprocess.STDOUT, start_new_session=True, env={**os.environ, "TMPDIR": str(scratch)},
             )
             try:
                 while process.poll() is None:
                     now = monotonic() - start
                     members = _members(process.pid)
                     rss = sum(p["rss_bytes"] for p in members)
+                    escaped = [p for p in members if p["affinity"] is not None and not set(p["affinity"]) <= set(cpus)]
                     output = _files(roots)
                     stage = _files(temporary)
                     anon = _anonymous_files(members, (*roots, *temporary))
                     atomic = _atomic_files(roots)
+                    scratch_named = _files((scratch,))
+                    scratch_anon = _anonymous_files(members, (scratch,))
+                    scratch_files = scratch_named["files"] + scratch_anon["files"]
+                    scratch_bytes = scratch_named["bytes"] + scratch_anon["bytes"]
+                    fds = [p["fds"] for p in members]
                     row = {
                         "rss_bytes": rss, "files": output["files"], "bytes": output["bytes"],
-                        "temp_files": stage["files"] + anon["files"] + atomic["files"],
-                        "temp_bytes": stage["bytes"] + anon["bytes"] + atomic["bytes"],
-                        "processes": len(members), "fds": sum(p["fds"] for p in members),
+                        "temp_files": stage["files"] + anon["files"] + atomic["files"] + scratch_files,
+                        "temp_bytes": stage["bytes"] + anon["bytes"] + atomic["bytes"] + scratch_bytes,
+                        "scratch_files": scratch_files, "scratch_bytes": scratch_bytes, "processes": len(members),
+                        "fds": sum(fds) if fds and all(value is not None for value in fds) else None,
                     }
-                    peaks = {name: max(previous, row[name]) for name, previous in peaks.items()}
+                    for name, value in row.items():
+                        if value is not None and (peaks[name] is None or value > peaks[name]):
+                            peaks[name] = value
                     print(json.dumps(row | {"seconds": now, "members": members}), file=log)
                     usage = os.statvfs(directory)
+                    if escaped:
+                        reason = f"stage process {escaped[0]['pid']} has affinity outside its allocation"
+                        break
                     if now > timeout or rss > memory_limit or usage.f_bavail * usage.f_frsize < disk_reserve:
                         reason = f"stage limit exceeded at {now:.2f}s, RSS {rss}, free bytes {usage.f_bavail * usage.f_frsize}"
                         break
@@ -188,15 +218,27 @@ def measure(argv, directory, cpus, roots=(), temporary=(), *, interval=0.2, time
             finally:
                 if process.poll() is None or _members(process.pid):
                     _stop_group(process)
+        remaining = _members(process.pid)
+        scratch_after_command = _files((scratch,))
+        if process.returncode == 0 and not remaining and reason is None:
+            # Some libraries leave disposable generated modules in TMPDIR.
+            try:
+                shutil.rmtree(scratch)
+            except OSError as exc:
+                reason = f"stage scratch cleanup failed: {exc}"
     finally:
         os.sched_setaffinity(0, previous_affinity)
     own_end = _cpu_usage(resource.RUSAGE_SELF)
-    stats = json.loads(terminal.read_text()) if terminal.is_file() else None
+    try:
+        stats = json.loads(terminal.read_text())
+    except (OSError, ValueError):
+        stats = None
     result = {
         "exit_code": process.returncode, "wall_seconds": monotonic() - start, "cpu_ids": restricted,
-        "sample_interval_seconds": interval, "sampled_peaks": peaks, "remaining": _members(process.pid),
+        "sample_interval_seconds": interval, "sampled_peaks": peaks, "remaining": remaining,
         "monitor_cpu": {key: own_end[key] - own_start[key] for key in own_start},
         "terminal": stats, "failure": reason, "retained": _files(roots),
+        "scratch_after_command": scratch_after_command, "scratch_retained": _files((scratch,)),
     }
     _record(directory / "result.json", result)
     return result

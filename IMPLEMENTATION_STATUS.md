@@ -67,16 +67,23 @@ the reference payloads. The suites also exercised distance-5 DDP replay and
 out-of-order evaluation recovery under the current package source.
 [Parallel generation verification](docs/verification/parallel_generation.md)
 
-### Final local multicore audit
+### Multicore Phase 5
 
 Both four-command saved-data chains completed at each of 2, 4 and 8 CPUs.
-All 57 measured production commands exited successfully, including frozen
-G/F/S controls, compact archive reanalysis, and matched S+/W/D continuation.
-Generation and fixed-checkpoint inference matched across layouts. The
-eight-thread serial training comparison was omitted in both repetitions at
-the user's request because it would reproduce the Phase 3 discrepancy.
-Eight-rank training met the numerical tolerances against the same-thread
-two-rank reference. Allocated-node and 96-CPU validation remain pending.
+All 60 measured commands passed, including fixed-input comparisons, compact
+archive replay and matched S+/W/D continuation. The separate four-worker
+65-shard check showed stable descriptor counts and released its mappings.
+The final Conda suites passed 322 ordinary and 34 process-resource tests,
+including real distance-5 recovery after evaluation, training and generation
+interruptions. Successful measured stages left no owned processes or scratch
+files. Four-rank DDP had the lowest controlled training median (8.66 s), and
+eight-worker evaluation was 1.70× as fast as two workers on this fixture.
+
+The two eight-thread inline training runs are included in the timings. The
+direct eight-thread/eight-rank tensor check was skipped for the known Phase 3
+float32 discrepancy. Exact input and optimizer controls matched, and both
+eight-rank checkpoints met the unchanged tensor tolerances against a fresh
+one-thread serial control. Allocated-node and 96-CPU validation remain pending.
 [Local multicore audit](docs/verification/local_multicore_audit.md)
 
 ### Multicore Phase 3

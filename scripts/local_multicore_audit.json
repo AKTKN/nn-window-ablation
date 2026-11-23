@@ -20,6 +20,6 @@
   "sample_interval_seconds": 0.2,
   "memory_limit_mib": 5632,
   "disk_reserve_gib": 4,
-  "skip_single_process_cpu_budgets": [8],
-  "skip_reason": "Phase 3 reproduced an eight-thread float32 GRU coefficient discrepancy from the first Adam update. At the user's request the eight-thread serial comparison is omitted. Eight-rank training and saved-data chains still run."
+  "skip_cross_thread_weight_cpu_budgets": [8],
+  "skip_reason": "Phase 3 reproduced a float32 GRU coefficient discrepancy when changing serial intra-op threads from one to eight. The direct eight-thread serial versus eight-rank numerical check is skipped. Both layouts are timed and their input and optimizer controls are compared. A fresh one-thread serial control is used for the eight-rank numerical gate."
 }

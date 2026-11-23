@@ -65,15 +65,15 @@ def _max_error(reference, other, relative, absolute):
     return float((reference - other).abs().max())
 
 
-def _compare_training(serial, distributed):
+def _compare_training(serial, distributed, *, numeric=True):
     assert serial["training_inputs"] == distributed["training_inputs"]
     assert serial["counters"] == distributed["counters"]
     assert serial["scheduler_state"] == distributed["scheduler_state"]
     assert serial["cursor"] == distributed["cursor"]
     world = distributed["distributed_state"]["world_size"]
     assert world in (2, 4, 8)
-    weights = max(_max_error(value, distributed["model"]["state_dict"][key], 1e-4, 3e-5)
-                  for key, value in serial["model"]["state_dict"].items())
+    serial_weights, distributed_weights = serial["model"]["state_dict"], distributed["model"]["state_dict"]
+    assert serial_weights.keys() == distributed_weights.keys()
     serial_opt, distributed_opt = serial["optimizer_state"], distributed["optimizer_state"]
     assert serial_opt["param_groups"] == distributed_opt["param_groups"]
     assert serial_opt["state"].keys() == distributed_opt["state"].keys()
@@ -81,8 +81,13 @@ def _compare_training(serial, distributed):
     for key, values in serial_opt["state"].items():
         paired = distributed_opt["state"][key]
         assert torch.equal(values["step"], paired["step"])
-        for name, atol in (("exp_avg", 2e-7), ("exp_avg_sq", 2e-9)):
-            moments[name] = max(moments[name], _max_error(values[name], paired[name], 2e-4, atol))
+        if numeric:
+            for name, atol in (("exp_avg", 2e-7), ("exp_avg_sq", 2e-9)):
+                moments[name] = max(moments[name], _max_error(values[name], paired[name], 2e-4, atol))
+    if not numeric:
+        return {"input_and_optimizer_controls_match": True, "numerical_tensors": "skipped"}
+    weights = max(_max_error(value, distributed_weights[key], 1e-4, 3e-5)
+                  for key, value in serial_weights.items())
     return {"max_weight_abs": weights, "max_moment_abs": moments}
 
 
@@ -99,7 +104,8 @@ def verify(audit):
         outputs["data"][name] = {"path": str(path), "sha256": file_integrity(path)["sha256"],
                                  "dataset_id": mapped.plan.dataset_id, "rows": mapped.plan.total_rows}
     global_inputs = {}
-    rank_reference = load_checkpoint(audit.chains[0][1])
+    skipped = audit.recipe.get("skip_cross_thread_weight_cpu_budgets", [])
+    legacy = audit.recipe.get("skip_single_process_cpu_budgets", [])
     for training, checkpoint, held, prediction in audit.chains:
         values = _prediction(held, checkpoint, prediction)
         outputs["chains"].append({"prediction": str(prediction), "training": str(training),
@@ -115,9 +121,14 @@ def verify(audit):
             assert trail == global_inputs.setdefault("base", trail)
         if name.startswith("train-r") and not distributed:
             paired = path.parents[1] / name.replace("-serial", "-ddp") / "checkpoint.pt"
-            outputs["training_comparisons"][name] = _compare_training(state, load_checkpoint(paired))
-        if name.startswith("train-r") and distributed and count == 8:
-            outputs["training_comparisons"][name + "-one-thread-rank-control"] = _compare_training(rank_reference, state)
+            outputs["training_comparisons"][name] = _compare_training(state, load_checkpoint(paired),
+                                                                      numeric=count not in skipped)
+        if name.startswith("train-r") and distributed and count in (*skipped, *legacy):
+            control = (path.parents[1] / f"train-c{count}-one-thread-control" / "checkpoint.pt"
+                       if count in skipped else audit.chains[0][1])
+            outputs["training_comparisons"][name + "-one-thread-control"] = {
+                "reference": str(control), **_compare_training(load_checkpoint(control), state),
+            }
 
     canonical = read_json(audit.frozen[1, 1])
     reference_train, reference_checkpoint, reference_held, _ = audit.chains[0]

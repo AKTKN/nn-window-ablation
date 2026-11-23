@@ -57,6 +57,8 @@ class Audit:
         print(name, f"{result['wall_seconds']:.2f}s", f"exit={result['exit_code']}", flush=True)
         if result["exit_code"] or result["remaining"] or result["failure"]:
             raise RuntimeError(f"stage failed: {name}. See {case / 'stdout.log'} and result.json")
+        if not result["terminal"] or result["scratch_retained"]["files"]:
+            raise RuntimeError(f"incomplete terminal accounting or retained scratch files: {case / 'result.json'}")
 
     def common(self, count, data_root, run_root=None):
         if run_root is not None:
@@ -79,7 +81,8 @@ class Audit:
         self.datasets.append((name, manifest, split))
         return manifest
 
-    def train(self, name, count, run_root, dataset, *, distributed=True, parent=None, phase=None, validation=None, **tags):
+    def train(self, name, count, run_root, dataset, *, distributed=True, threads=None, parent=None, phase=None,
+              validation=None, **tags):
         r = self.recipe
         directory = run_root / name
         updates = r["continuation_updates"] if phase else r["base_updates"]
@@ -92,7 +95,7 @@ class Audit:
             f"training.scheduler_step_size={r['scheduler_step_size']}", f"training.scheduler_gamma={r['scheduler_gamma']}",
             f"checkpoint.save_every_updates={r['checkpoint_interval']}",
             *(["training.execution=ddp", f"runtime.processes={count}"] if distributed
-              else [f"runtime.intraop_threads={count}"]),
+              else [f"runtime.intraop_threads={threads if threads is not None else count}"]),
             *([f"training={phase}", f"checkpoint.init_from={parent}"] if phase else []),
             *([f"training.validation_data_id={validation.parent.name}"] if validation else []),
         ], roots=(directory,), **tags)
@@ -137,8 +140,6 @@ class Audit:
             tags = {"family": "controlled", "repetition": repeat}
             for count in order:
                 for distributed in ((False, True) if repeat == 1 else (True, False)):
-                    if not distributed and count in r["skip_single_process_cpu_budgets"]:
-                        continue
                     label = "ddp" if distributed else "serial"
                     self.train(f"train-r{repeat}-c{count}-{label}", count, controlled / "runs", training,
                                distributed=distributed, **tags)
@@ -150,6 +151,9 @@ class Audit:
                           r["base_shots"], r["base_shard_rows"], **tags)
             self.generate(f"serial-r{repeat}-held", 1, serial_data, "held", "test",
                           r["held_shots"], r["held_shard_rows"], **tags)
+        for count in r["skip_cross_thread_weight_cpu_budgets"]:
+            self.train(f"train-c{count}-one-thread-control", count, controlled / "runs", training,
+                       distributed=False, threads=1, family="correctness")
         self.frozen[1, 1] = self.evaluate("frozen-serial-reference", 1, controlled / "runs", held, reference,
                                             family="correctness")
         latest = self.frozen[4, 1]
@@ -284,6 +288,7 @@ def _trends(root, rows, recipe):
 
 def _environment(root, recipe, cpus):
     from nn_window_ablation.execution import _package_source_sha256
+    from nn_window_ablation.runtime import _cpu_quota
 
     def command(*args):
         return subprocess.check_output(args, text=True).strip()
@@ -292,13 +297,16 @@ def _environment(root, recipe, cpus):
     _record(root / "environment.json", {
         "git_commit": command("git", "rev-parse", "HEAD"), "git_changes": command("git", "status", "--short"),
         "package_sha256": _package_source_sha256(), "python": sys.version, "platform": platform.platform(),
+        "driver_sha256": {path.name: sha(path) for path in sorted(SCRIPT_DIR.glob("*audit*.py"))},
         "packages": {name: importlib.metadata.version(name) for name in (
             "nn-window-ablation", "torch", "torch-geometric", "stim", "numpy", "scipy", "matplotlib",
         )},
         "effective_affinity": sorted(os.sched_getaffinity(0)), "chosen_cpus": cpus,
+        "cpu_model_and_topology": command("lscpu"), "effective_cpu_quota": _cpu_quota(),
         "topology": command("lscpu", "-e=CPU,CORE,NODE,SOCKET,ONLINE"),
         "meminfo": Path("/proc/meminfo").read_text(), "cgroup": Path("/proc/self/cgroup").read_text(),
         "cpu_max": (Path("/sys/fs/cgroup/cpu.max").read_text() if Path("/sys/fs/cgroup/cpu.max").is_file() else None),
+        "memory_max": (Path("/sys/fs/cgroup/memory.max").read_text() if Path("/sys/fs/cgroup/memory.max").is_file() else None),
         "filesystem": command("findmnt", "-T", str(root), "-no", "FSTYPE"),
         "limits": Path("/proc/self/limits").read_text(), "cache_policy": "No cache flush or prewarming.",
     })
@@ -306,14 +314,14 @@ def _environment(root, recipe, cpus):
 
 
 def main():
+    from nn_window_ablation.runtime import _cpu_quota
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="new directory outside the tracked checkout")
     parser.add_argument("--recipe", type=Path, default=SCRIPT_DIR / "local_multicore_audit.json")
     parser.add_argument("--summarize-only", action="store_true", help="verify and summarize an existing measured inventory")
     args = parser.parse_args()
     available = sorted(os.sched_getaffinity(0))
-    if len(available) < 8:
-        raise SystemExit("the local audit requires eight effective logical CPUs")
     _subreaper()
     os.environ.update({key: "1" for key in THREAD_ENV})
     os.environ.update(PYTHONHASHSEED="0", PYTHONUNBUFFERED="1")
@@ -325,6 +333,9 @@ def main():
     else:
         root.mkdir(parents=True)
         _environment(root, recipe, available[:8])
+        quota = _cpu_quota()
+        if len(available) < 8 or (quota is not None and quota < 8):
+            raise SystemExit(f"matrix blocked: eight effective CPUs required. See {root / 'environment.json'}")
         audit.execute()
     audit.summarize()
 

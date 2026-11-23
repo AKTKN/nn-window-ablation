@@ -67,3 +67,29 @@ for i in range(500):
         sorted(os.sched_getaffinity(0))[:1], temporary=(staging,), timeout=10, interval=0.01,
     )
     assert result["exit_code"] == 0 and result["failure"] is None and not result["remaining"]
+
+
+@pytest.mark.resource_process
+def test_monitor_observes_and_releases_unnamed_stage_spool(tmp_path):
+    child = """
+from pathlib import Path
+from tempfile import TemporaryFile, gettempdir
+from time import sleep
+
+Path(gettempdir(), 'runtime-cache').write_bytes(b'cache')
+with TemporaryFile() as spool:
+    spool.write(b'x' * 3_000_000)
+    spool.flush()
+    sleep(0.5)
+sleep(0.25)
+"""
+    case = tmp_path / "spool"
+    result = measure([sys.executable, "-c", child], case, sorted(os.sched_getaffinity(0))[:1],
+                     timeout=15, interval=0.05)
+    assert result["exit_code"] == 0 and not result["remaining"]
+    assert result["sampled_peaks"]["scratch_bytes"] == 3_000_005
+    assert result["sampled_peaks"]["scratch_files"] == 2
+    assert result["scratch_after_command"] == {"bytes": 5, "files": 1}
+    assert result["scratch_retained"] == {"bytes": 0, "files": 0}
+    scratch = [row["scratch_bytes"] for row in map(json.loads, (case / "timeline.jsonl").read_text().splitlines())]
+    assert 5 in scratch[scratch.index(3_000_005) + 1:]
