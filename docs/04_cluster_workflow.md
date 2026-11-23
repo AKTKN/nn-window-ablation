@@ -1,108 +1,295 @@
-# CPU cluster workflow for nn-window-ablation
+# Run nn-window-ablation on a PBS cluster
 
-## 1. Available information and execution scope
+The commands below prepare a fixed checkout, install the CPU environment,
+render and submit small jobs, and transfer a verified results archive. Run
+installation and job planning on the login node where site policy permits.
+Run simulation, profiling, and training in a compute allocation.
 
-The repository name is `nn-window-ablation`. The initial pilot uses the rotated surface-code memory experiment at $d=5$, $T=12d=60$, $c=d=5$, and default buffers $b_L=b_R=d$. It starts from random initialization without a prerequisite $d=3$ model and retains the planned 256-dimensional, four-layer GRU. The scientific protocol, architecture, and noise model are unchanged by the choice of execution hardware.
+The supplied site record lists PBS commands under `/opt/pbs/bin` and advertises
+a node with 96 PBS CPU resources and 350 GB. Ask the site for the actual queue,
+account, limits, and shared paths. The small acceptance examples request
+one CPU and 4 GB. The repository's cluster acceptance remains pending.
+[Verification status](verification/P7.md#allocated-node-acceptance-pending)
 
-The supplied login-node information identifies Rocky Linux 8.8, 20 CPU cores, approximately 187 GiB of memory, and no available `nvidia-smi` command. The supplied compute-node record advertises `resources_available.ncpus=96`, `resources_available.mem=350gb`, and a `job-busy` state. No GPU resource appears in that record. These observations support a CPU-first workflow; they do not establish that every cluster node lacks a GPU or that the listed compute node is currently available. PBS commands are located under `/opt/pbs/bin`.
+## 1. Connect and check out a fixed revision
 
-This document specifies the planned cluster workflow. P3 has a separate
-local CPU profile. Compute-node environment validation, timing, and scheduler
-execution remain pending.
-
-## 2. Local development and cluster checkout
-
-Develop and review the source locally, then publish an approved version to GitHub. On the cluster, clone the repository and check out the exact commit selected for the experiment. Record the commit in every run. Keep the checkout unchanged while its jobs are queued or running, because batch jobs can start after submission and read the files then present on disk.
-
-The repository uses `environment.yml` for the Conda base environment, PBS templates under `scripts/pbs/*.pbs.example`, and `src/nn_window_ablation/conf/runtime/cpu.yaml` for the CPU profile. P0 provides `nnwa validate` for inspecting the resolved settings. Commands that run scientific workflows become available in later phases. Large datasets and results belong under explicitly configured storage roots.
-
-Use the login node for editing, environment preparation where site policy permits, submission, and result transfer. Perform the $d=5$ execution checks and training benchmark in an approved compute allocation. The login node's CPU count is not the resource budget for a scheduled job.
-
-## 3. Conda environment and CPU dependencies
-
-Use a dedicated Conda environment whose base specification contains Python 3.11 and pip. The proposed first dependency candidate bootstraps PyTorch 2.7.0 from the official CPU wheel index before installing the editable project and its selected PyG, Stim, PyMatching, NumPy, SciPy, Hydra/OmegaConf, and plotting dependencies. This is an upstream-derived candidate, not a validated cluster environment. PyTorch's official instructions provide Linux/Pip/CPU installation and version-specific CPU wheel commands. No CUDA toolkit, GPU driver package, MPI runtime, or ASR package is needed for this initial execution path. [1, 2]
-
-The environment specification is initially a declaration to resolve, not a verified lock; the scaffold supplies no `uv.lock`. The upstream decoder's requirements provide a starting candidate, but their compatibility with the cluster must be checked. In particular, inspect the compute node's operating system, CPU architecture, available instruction set, and library compatibility before accepting an environment prepared on the login node. Validate imports, one generated batch, one model forward/backward step, and checkpoint reload on the allocated node.
-
-Use Conda to establish the isolated base environment before installing any remaining pip dependencies. Keep the Conda and pip specifications together and record the final resolved package inventories. Conda documents this installation order and recommends recreating an environment when later changes would mix the package managers inconsistently. Record successful resolution and execution checks before accepting the environment specification for experiments. [3]
-
-For a noninteractive PBS job, use an explicit Conda executable and environment prefix with `conda run --no-capture-output`. This avoids depending on interactive shell initialization and streams the program's output to the batch log. An alternative is to source the installation's `etc/profile.d/conda.sh` and activate the environment within the script. An environment activated in a login shell should not be assumed to be active in a later batch shell. [3, 4]
-
-## 4. Single-process execution and CPU threading
-
-Start with one Python process and multithreaded PyTorch operators. Set data-loader workers to zero and inter-operation threads to one. Benchmark intra-operation thread counts
-
-$$
-n_{\mathrm{thread}}\in\{1,8,16,32,48,96\},
-$$
-
-subject to the approved CPU allocation. These are thread counts for one training process, not a request for 96 data-loader workers or 96 copies of the model. The scheduler's `ncpus` value describes allocated CPU resources; inspect the actual topology and CPU affinity before interpreting it as a count of physical cores.
-
-Set `OMP_NUM_THREADS` and `MKL_NUM_THREADS` consistently, and have the application's runtime initialization call `torch.set_num_threads` before model execution. PyTorch documents that `MKL_NUM_THREADS` takes precedence over `OMP_NUM_THREADS`, and that intra-operation thread settings should be applied before eager/JIT/autograd work. Apply the inter-operation setting once at process startup. [5–7]
-
-Benchmark identical $d=5$ workloads, model parameters, batch sizes, and update counts. Record warm-up separately, then measure trajectories per second, optimizer-step time, peak resident memory, and total wall time. Select the thread count by measured throughput; a larger thread pool is not assumed to be faster for small graphs. Keep generation and graph-construction time visible in the measurements. Parallel data preparation or concurrent independent jobs can be considered after this benchmark, with their total threads bounded by the allocation. PyTorch's multiprocessing guidance describes the oversubscription that otherwise results. [8]
-
-The P3 profiling template invokes the installed profiling module once per
-fresh process. Supply the declared allocation and chosen intra-operation
-thread count explicitly. It runs the bounded full-architecture workload
-and writes timings and effective runtime settings to a new JSON file.
-[P3 PBS template](../scripts/pbs/profile.pbs.example)
-
-## 5. PBS resource request and template
-
-PBS resource requests use `select` chunks. A candidate request reflecting the supplied node record is `select=1:ncpus=96:mem=350gb`. It is a site-adjustable request, not a guarantee that the queue accepts that memory limit or that all resources are presently free. Queue, account, walltime, placement, and allocation limits must follow the site's actual configuration; no queue name is assumed here. After benchmarking, request the resources needed by the chosen workload. [9, 10]
-
-The following illustrative script assumes that the submission directory, environment, data, and output paths have already been verified as accessible from the compute node. The placeholder paths and proposed CLI runtime fields require implementation and local substitution. The one-hour walltime is a placeholder for a short pilot allocation.
+In your local Linux or WSL shell, set the SSH destination supplied by the site
+and connect.
 
 ```bash
-#!/bin/bash
-#PBS -N nnwa_d5
-#PBS -l select=1:ncpus=96:mem=350gb
-#PBS -l walltime=01:00:00
-#PBS -j oe
-
-set -euo pipefail
-cd "${PBS_O_WORKDIR:?Missing PBS submission directory}"
-
-NNWA_CONDA=/path/to/miniconda3/bin/conda
-NNWA_ENV_PREFIX=/path/to/envs/nnwa_cpu
-NNWA_THREADS=16
-export OMP_NUM_THREADS="$NNWA_THREADS"
-export MKL_NUM_THREADS="$NNWA_THREADS"
-
-"$NNWA_CONDA" run --no-capture-output -p "$NNWA_ENV_PREFIX" \
-  nnwa train experiment=pilot_d5 runtime=cpu \
-  runtime.intraop_threads="$NNWA_THREADS" \
-  runtime.interop_threads=1 data.num_workers=0 seed=101
+ssh "$CLUSTER_LOGIN"
 ```
 
-The intended runtime profile explicitly selects `runtime.device=cpu`. The training budget fields remain unresolved in the scaffold; actual launch requires explicit pilot update, batch, optimizer, and learning-rate choices. The more complete `scripts/pbs/pilot.pbs.example` requires those choices as inputs. After CLI implementation, a reviewed `.pbs.example` file can be copied to a run-specific `.pbs` file, its placeholders replaced, and submitted using `/opt/pbs/bin/qsub`. Status and allocation details are then inspected through the site's PBS commands. Merely saving the template submits no job.
+On the login node, set `NNWA_WORK` to an absolute project or scratch path
+approved for both login and compute nodes. Set `NNWA_REVISION` to the full
+Git commit selected for the run. Use your existing GitHub access for the
+private repository.
 
-PBS defines `PBS_O_WORKDIR` as the submission working directory; it does not establish that the directory is mounted on every execution host. `PBS_JOBID` identifies the scheduler job. Record it as metadata, and use an independently assigned portable run name such as `pilot_d5_cpu16_seed101` for result paths. Avoid colons, array brackets, or unsanitized job identifiers in archive names. The template leaves log naming to PBS and joins stderr into stdout rather than assuming shell-variable expansion in `#PBS` output directives. [9, 11]
+```bash
+: "${NNWA_WORK:?Set an approved shared project directory}"
+: "${NNWA_REVISION:?Set the full Git commit to run}"
+export NNWA_WORK NNWA_REVISION
+export NNWA_REPO="$NNWA_WORK/source"
+export NNWA_DATA_ROOT="$NNWA_WORK/data"
+export NNWA_RUN_ROOT="$NNWA_WORK/runs"
+export NNWA_JOBS="$NNWA_WORK/jobs"
+export NNWA_EXPORTS="$NNWA_WORK/exports"
 
-Hydra configuration sweeps and PBS submission are separate operations: the initial design uses reviewed single-job PBS templates around the future CLI. Hydra's basic launcher does not allocate cluster resources; see the repository design document for this interface. [12]
+mkdir -p "$NNWA_WORK" "$NNWA_DATA_ROOT" "$NNWA_RUN_ROOT" "$NNWA_JOBS" "$NNWA_EXPORTS"
+git clone https://github.com/AKTKN/nn-window-ablation.git "$NNWA_REPO"
+git -C "$NNWA_REPO" checkout --detach "$NNWA_REVISION"
+git -C "$NNWA_REPO" rev-parse HEAD
+git -C "$NNWA_REPO" status --short
+```
 
-## 6. Storage visibility and result transfer
+Keep the checkout clean while jobs are queued or running. Write plans,
+datasets, job logs, and exports to the separate roots above.
 
-The supplied filesystem command used a narrow filter and returned no matching network filesystem. This does not establish that home, project, or scratch paths are local or inaccessible from compute nodes. Before a real run, inspect the intended paths with `findmnt -T` or `df -T`, then verify visibility from inside an approved compute allocation. A small marker file and its checksum can establish whether the same path resolves to the same content; verify output write access there as well. These checks are proposed for the user's cluster session, not remotely performed here.
+## 2. Install Conda dependencies and capture the environment
 
-If the paths are shared, run from the stable checkout and write outputs to the designated shared result directory. If the site requires node-local scratch, explicitly stage the checkout and required immutable data into the allocation and copy selected outputs back before the job ends. Discover scratch location and retention from site configuration; do not assume that a particular temporary-directory variable or path exists.
+Use the site's Conda installation or load its documented shell module.
+Set the absolute executable path if Conda is outside `PATH`. Use a prefix
+visible on compute nodes. The environment below uses Python 3.11 and the
+PyTorch 2.7.0 CPU wheel.
 
-After execution, assemble one export directory for the selected run or comparison. Include resolved configurations, source/environment provenance, completion status, logs, metric tables, figures, paired prediction arrays, matching global/core label arrays or their identified dataset subset, and manifests with checksums. Include the selected checkpoint when local inference or continuation is required. The full immutable test dataset is optional when local analysis already has the corresponding labels and identities; raw detector records are needed if local re-decoding is intended.
+```bash
+export NNWA_CONDA_EXE="$(type -P conda)"
+export NNWA_CONDA_PREFIX="$NNWA_WORK/envs/nn_window_decoding"
+cd "$NNWA_REPO"
 
-Compress that explicit export directory, transfer the archive to the local machine with `scp`, and verify its checksum after transfer. Do not copy generated training streams, graph caches, or all intermediate checkpoints by default. Preserve the same shot identities across exported predictions and labels so that local paired analysis reproduces the cluster result.
+"$NNWA_CONDA_EXE" env create --prefix "$NNWA_CONDA_PREFIX" --file environment.yml
+export NNWA_PYTORCH_INDEX=https://download.pytorch.org/whl/cpu
+runenv() { "$NNWA_CONDA_EXE" run --no-capture-output -p "$NNWA_CONDA_PREFIX" "$@"; }
+runenv python -m pip install torch==2.7.0 --index-url "$NNWA_PYTORCH_INDEX"
+runenv python -m pip install -e '.[experiment,dev]'
+runenv python -m pip check
+runenv nnwa --help
 
-## References
+"$NNWA_CONDA_EXE" list -p "$NNWA_CONDA_PREFIX" --explicit > "$NNWA_JOBS/conda.explicit.txt"
+runenv python -m pip freeze > "$NNWA_JOBS/pip.freeze.txt"
+```
 
-1. PyTorch, [Start Locally: Linux CPU installation](https://docs.pytorch.org/get-started/locally/).
-2. PyTorch, [Previous versions and CPU wheel commands](https://pytorch.org/get-started/previous-versions/).
-3. Conda, [Managing environments](https://docs.conda.io/projects/conda/en/stable/user-guide/tasks/manage-environments.html).
-4. Conda, [conda run](https://docs.conda.io/projects/conda/en/stable/commands/run.html).
-5. PyTorch, [Threading environment variables](https://docs.pytorch.org/docs/stable/threading_environment_variables.html).
-6. PyTorch, [torch.set_num_threads](https://docs.pytorch.org/docs/2.7/generated/torch.set_num_threads.html).
-7. PyTorch, [torch.set_num_interop_threads](https://docs.pytorch.org/docs/2.7/generated/torch.set_num_interop_threads.html).
-8. PyTorch, [Multiprocessing best practices: CPU oversubscription](https://docs.pytorch.org/docs/stable/notes/multiprocessing.html).
-9. OpenPBS, [qsub manual source](https://github.com/openpbs/openpbs/blob/master/doc/man1/qsub.1B).
-10. OpenPBS, [Resource specification manual source](https://github.com/openpbs/openpbs/blob/master/doc/man1/pbs_resources.7B).
-11. Altair, [PBS Professional 2024.1 User's Guide](https://help.altair.com/2024.1.0/PBS%20Professional/PBSUserGuide2024.1.pdf), sections on job input/output and execution environment.
-12. Hydra 1.3, [Multi-run](https://hydra.cc/docs/1.3/tutorials/basic/running_your_app/multi-run/).
+If network access is restricted, use the site's mirror or pre-staged CPU
+packages. Reuse the prefix only for the selected checkout. P7 checks the
+installed package files against the checkout and runs Conda by absolute
+executable and prefix in each batch script.
+[Conda run](https://docs.conda.io/projects/conda/en/stable/commands/run.html) ·
+[PyTorch CPU wheels](https://pytorch.org/get-started/previous-versions/)
+
+## 3. Prepare bounded job specifications
+
+This shell block writes six explicit JSON plans outside the Git checkout.
+Set `NNWA_QUEUE` and `NNWA_ACCOUNT` only if the site requires them. Adjust
+the one-node request to site policy. Use one application process, one PyTorch
+inter-operation thread, and zero loader workers for the initial checks.
+
+```bash
+runenv python - <<'PY'
+from pathlib import Path
+import json
+import os
+
+jobs = Path(os.environ["NNWA_JOBS"])
+shared = {
+    "repository": os.environ["NNWA_REPO"],
+    "source_revision": os.environ["NNWA_REVISION"],
+    "conda_executable": os.environ["NNWA_CONDA_EXE"],
+    "conda_prefix": os.environ["NNWA_CONDA_PREFIX"],
+    "data_root": os.environ["NNWA_DATA_ROOT"],
+    "run_root": os.environ["NNWA_RUN_ROOT"],
+    "resources": {
+        "ncpus": 1, "memory": "4gb", "walltime": "00:10:00",
+        "queue": os.environ.get("NNWA_QUEUE") or None,
+        "account": os.environ.get("NNWA_ACCOUNT") or None,
+    },
+    "threads": 1,
+}
+train = [
+    "training.max_steps=4", "training.batch_size=2", "training.microbatch_size=1",
+    "training.learning_rate=0.001", "training.optimizer=adam",
+    "training.scheduler=none", "data.training_chunk_shots=3",
+]
+base = str(Path(os.environ["NNWA_RUN_ROOT"]) / "base/checkpoint.pt")
+stages = {
+    "probe": ("probe", "probe", []),
+    "generate": ("generate", "generation", [
+        "data.split=test", "data.id=held", "data.shots=4", "data.shard_shots=2",
+    ]),
+    "profile": ("profile", "profile", []),
+    "train": ("train", "base", train),
+    "resume": ("resume", "base", [*train, "checkpoint.resume_from=" + json.dumps(base)]),
+    "evaluate": ("evaluate", "paired", [
+        "evaluation=paired", "data.id=held", "checkpoint.path=" + json.dumps(base),
+    ]),
+}
+for name, (stage, run_name, overrides) in stages.items():
+    value = {
+        **shared, "stage": stage, "job_name": "nnwa-" + name, "run_name": run_name,
+        "receipt_dir": str(jobs / f"{name}-attempt1"), "overrides": overrides,
+    }
+    (jobs / f"{name}.json").write_text(json.dumps(value, indent=2) + "\n")
+PY
+
+for stage in probe generate profile train resume evaluate; do
+  runenv nnwa pbs render --spec "$NNWA_JOBS/$stage.json" --output "$NNWA_JOBS/$stage.pbs"
+  bash -n "$NNWA_JOBS/$stage.pbs"
+done
+```
+
+Review the scripts before submission. Rendering resolves the Hydra settings,
+checks explicit budgets, and quotes paths and overrides as argument tokens.
+A different submission attempt needs a new `receipt_dir`. Train and resume
+share the same scientific run name and settings. Profiling has its own
+`profile` settings for `batch_size`, `warmup`, and `steps`, defaulting to
+2, 1, and 2. [OpenPBS qsub](https://github.com/openpbs/openpbs/blob/master/doc/man1/qsub.1B)
+
+## 4. Validate and run on an allocated node
+
+Set the installed `qsub` and `qstat` paths and submit the probe first.
+
+```bash
+qsub_bin=/opt/pbs/bin/qsub
+qstat_bin=/opt/pbs/bin/qstat
+
+probe_id="$("$qsub_bin" "$NNWA_JOBS/probe.pbs")"
+"$qstat_bin" -f "$probe_id"
+```
+
+After it exits, inspect the receipt and import output.
+
+```bash
+cat "$NNWA_JOBS/probe-attempt1/job.json"
+cat "$NNWA_JOBS/probe-attempt1/stdout.log"
+runenv nnwa pbs status "$probe_id" --qstat "$qstat_bin" \
+  --receipt "$NNWA_JOBS/probe-attempt1/job.json"
+```
+
+The probe checks the fixed revision, environment, root visibility, CPU
+affinity, and dependency imports. Verify writable data and run roots by
+running generation and training. For extra path checks in an interactive
+allocation, use `findmnt -T "$NNWA_DATA_ROOT"`, `df -T "$NNWA_RUN_ROOT"`,
+and a small file whose checksum can be compared from the login node.
+PBS nodefile entries are recorded as slots. Use scheduler accounting and
+CPU affinity to check the observed allocation. The receipt keeps requested
+resources and observed evidence in separate fields. Depending on site job
+history settings, finished jobs may be absent from `qstat`.
+[OpenPBS qstat](https://github.com/openpbs/openpbs/blob/master/doc/man1/qstat.1B)
+
+Submit the generation, profile, and base training jobs. These three stages
+can run independently. Check their receipts before launching dependent work.
+
+```bash
+generate_id="$("$qsub_bin" "$NNWA_JOBS/generate.pbs")"
+profile_id="$("$qsub_bin" "$NNWA_JOBS/profile.pbs")"
+train_id="$("$qsub_bin" "$NNWA_JOBS/train.pbs")"
+```
+
+Once generation and training report `complete`, submit evaluation.
+
+```bash
+evaluate_id="$("$qsub_bin" "$NNWA_JOBS/evaluate.pbs")"
+```
+
+For each stage, inspect `jobs/<stage>-attempt1/job.json` and `stdout.log`.
+Completed checkpoints live under `runs/base/`, and the paired prediction
+manifest lives under `runs/paired/`. The profiling JSON has the observed
+thread counts, CPU timings, and peak RSS. Use a fresh job and output path for
+each thread count. Configure the request for the measured workload.
+[CPU threading](https://docs.pytorch.org/docs/2.7/notes/multiprocessing.html)
+
+### Check interruption and resume
+
+For a naturally interrupted `base` run with a saved checkpoint, submit
+`resume.pbs` in a new receipt directory. It uses the original declared total
+budget and restores the optimizer, scheduler, and stream cursor.
+
+For a controlled acceptance check, use a fresh `base` run with the same
+training settings, then pause via the Python workflow after update one. Run
+the following inside an approved interactive allocation before submitting
+`train.pbs`, with the same repository, prefix, roots, and CPU settings
+exported inside the allocation.
+
+Request an interactive allocation through the site before running that check.
+
+```bash
+"$qsub_bin" -I -l select=1:ncpus=1:mem=4gb -l walltime=00:10:00 \
+  -v NNWA_REPO,NNWA_CONDA_EXE,NNWA_CONDA_PREFIX,NNWA_DATA_ROOT,NNWA_RUN_ROOT
+```
+
+```bash
+cd "$NNWA_REPO"
+"$NNWA_CONDA_EXE" run --no-capture-output -p "$NNWA_CONDA_PREFIX" python - <<'PY'
+from pathlib import Path
+from hydra import compose, initialize_config_module
+from nn_window_ablation.config import resolve_config
+from nn_window_ablation.execution import train_workflow
+
+overrides = [
+    "runtime=cpu", "runtime.allocated_cpus=1", "runtime.intraop_threads=1",
+    "run_name=base", "data.split=train", "training.max_steps=4", "training.batch_size=2",
+    "training.microbatch_size=1", "training.learning_rate=0.001",
+    "training.optimizer=adam", "training.scheduler=none", "data.training_chunk_shots=3",
+]
+with initialize_config_module(config_module="nn_window_ablation.conf", version_base="1.3"):
+    config = resolve_config(compose(config_name="config", overrides=overrides), invocation_dir=Path.cwd())
+train_workflow(config, stop_after=1)
+PY
+```
+
+Then submit the resume script from the login node:
+
+```bash
+resume_id="$("$qsub_bin" "$NNWA_JOBS/resume.pbs")"
+```
+
+Check `phase_updates=4` in `runs/base/run.json` and that `resume-attempt1/job.json`
+records successful exit and the expected checkpoint hash. Use compatible
+CPU allocation, unchanged source, and the same packages and Conda prefix.
+For S+, W, and D, create three train job specs with different run names and
+receipt directories, the same base `checkpoint.init_from`, and the same
+data and optimizer budget. Select the respective training preset in each.
+Run their paired evaluations with one held-out dataset and identical deployment
+windows. [Matched continuation](verification/P6.md)
+
+## 5. Analyze, transfer, and verify locally
+
+Run analysis where site policy permits. Large analyses can use an approved
+interactive allocation. The settings below are for the tiny acceptance
+fixture.
+
+```bash
+cd "$NNWA_WORK"
+runenv nnwa analyze runtime=local_cpu runtime.allocated_cpus=1 run_name=summary data.id=held \
+  "analysis.predictions=[\"$NNWA_RUN_ROOT/paired/manifest.json\"]" \
+  analysis.sparse_rule=1 analysis.bootstrap_replicates=99 analysis.bootstrap_seed=17
+runenv nnwa export --dataset "$NNWA_DATA_ROOT/held" \
+  --report "$NNWA_RUN_ROOT/summary/report.json" --output "$NNWA_EXPORTS/held-results.tar.gz" \
+  --log "$NNWA_JOBS/evaluate-attempt1/job.json" --log "$NNWA_JOBS/evaluate-attempt1/stdout.log" \
+  --log "$NNWA_JOBS/conda.explicit.txt" --log "$NNWA_JOBS/pip.freeze.txt"
+(cd "$NNWA_EXPORTS" && sha256sum held-results.tar.gz > held-results.tar.gz.sha256)
+```
+
+Add `--include-detectors --include-checkpoints` if the recipient needs to
+re-decode the held-out rows. Add `--training-dataset PATH` only when a selected
+stored training dataset is needed. The default archive supports statistics
+from its retained rows. For S+/W/D, pass the three prediction manifests to
+`analysis=adaptation` before exporting the resulting report.
+[Bundle capabilities](verification/P7.md#portable-bundles)
+
+On the workstation, set `REMOTE_EXPORT_DIR` to the approved remote export
+directory used above and transfer the archive and checksum over your
+authenticated connection. Use the NumPy and SciPy versions recorded in the
+report. The copied package inventories can help recreate them.
+
+```bash
+scp "$CLUSTER_LOGIN:$REMOTE_EXPORT_DIR/held-results.tar.gz" .
+scp "$CLUSTER_LOGIN:$REMOTE_EXPORT_DIR/held-results.tar.gz.sha256" .
+sha256sum -c held-results.tar.gz.sha256
+conda run -n nn_window_decoding nnwa extract held-results.tar.gz incoming
+conda run -n nn_window_decoding nnwa reanalyze --bundle incoming --output replay
+diff -u incoming/analysis/rates.csv replay/rates.csv
+diff -u incoming/analysis/contrasts.csv replay/contrasts.csv
+```
+
+The manifest independently verifies every extracted file. Save the completed
+job receipts and the archive digest with the compute-node acceptance record.

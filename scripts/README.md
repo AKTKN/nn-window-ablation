@@ -1,10 +1,14 @@
 # PBS templates
 
+Use `nnwa pbs render --spec job.json --output job.pbs` for validated P7
+job plans and application receipts. Follow the site's submission procedure
+after reviewing the script. [PBS cluster guide](../docs/04_cluster_workflow.md)
+
 `pbs/probe.pbs.example` describes a short compute-node environment probe.
 `pbs/profile.pbs.example` runs the P3 distance-5 timing workload with two
 trajectories, one warm-up iteration, and two measured iterations. It requires
 a clean checkout at the recorded source revision and writes a new JSON
-report. `pbs/pilot.pbs.example` describes the later training launch. The pilot
+report. `pbs/pilot.pbs.example` describes a manually configured training launch. The pilot
 requires the scientific workflow and explicitly chosen budgets.
 
 The supplied node record lists 96 PBS CPU resources and 350 GB of memory. The
@@ -41,7 +45,8 @@ data-loader workers, then measure the declared thread candidates [3].
 Hydra's basic multirun launcher runs configurations locally in the allocated
 environment; it is not a PBS launcher. Initially submit a reviewed single-job
 template per independent training job, and pass checkpoint dependencies explicitly
-[4]. Campaign and export automation is P7.
+[4]. P7's renderer, portable archive, and local replay are documented in the
+[verification record](../docs/verification/P7.md).
 
 Before substantive computation, verify repository, environment, and data path
 visibility from an allocated node. `PBS_O_WORKDIR` identifies the submission

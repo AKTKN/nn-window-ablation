@@ -5,6 +5,15 @@ import os
 from .config import ConfigError, DataConfig, RuntimeConfig, validate_cpu_budget
 
 
+def runtime_observation(data: DataConfig) -> dict:
+    import torch
+
+    return {
+        "torch_intraop": torch.get_num_threads(), "torch_interop": torch.get_num_interop_threads(),
+        "data_loader_workers": data.num_workers, "sampling_processes": data.sampling_processes,
+    }
+
+
 def configure_cpu_runtime(runtime: RuntimeConfig, data: DataConfig) -> None:
     """Apply thread limits before numerical work in an application process."""
     required = validate_cpu_budget(runtime, data)

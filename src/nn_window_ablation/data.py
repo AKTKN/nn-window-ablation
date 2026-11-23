@@ -257,13 +257,17 @@ def write_dataset(
 
 
 @dataclass(frozen=True, slots=True)
-class MappedShard:
+class MappedLabelShard:
     plan: SamplingPlan
     index: int
-    detectors: NDArray[np.uint8]
     global_labels: NDArray[np.uint8]
     core_labels: NDArray[np.uint8]
     shot_ids: NDArray[np.int64]
+
+
+@dataclass(frozen=True, slots=True)
+class MappedShard(MappedLabelShard):
+    detectors: NDArray[np.uint8]
 
     def read(self, rows: slice | NDArray[np.int64] = slice(None)) -> TrajectoryBatch:
         ids = self.shot_ids[rows].copy()
@@ -287,7 +291,14 @@ class MappedDataset:
     manifest_sha256: str
 
 
-def _read_shard(root: Path, plan: SamplingPlan, index: int, inventory: dict) -> MappedShard:
+@dataclass(frozen=True, slots=True)
+class MappedLabels:
+    plan: SamplingPlan
+    shards: tuple[MappedLabelShard, ...]
+    manifest_sha256: str
+
+
+def _read_shard(root: Path, plan: SamplingPlan, index: int, inventory: dict, *, labels_only: bool = False):
     if inventory["index"] != index:
         raise ArtifactError("dataset shard identities are duplicated or out of order")
     path = root / "shard.json"
@@ -300,6 +311,8 @@ def _read_shard(root: Path, plan: SamplingPlan, index: int, inventory: dict) -> 
     arrays = {}
     start, count = plan.chunk_bounds(index)
     for role, width in _bit_widths(plan).items():
+        if labels_only and role == "detectors":
+            continue
         entry = record["arrays"][role]
         path = root / ARRAY_FILES[role]
         if entry["role"] != role or entry["filename"] != path.name:
@@ -318,7 +331,7 @@ def _read_shard(root: Path, plan: SamplingPlan, index: int, inventory: dict) -> 
         arrays[role] = array
     if not np.array_equal(arrays["shot_ids"], _shot_ids(plan, start, count)):
         raise ArtifactError("wrong, duplicate or reordered shot IDs for shard")
-    return MappedShard(plan, index, **arrays)
+    return (MappedLabelShard if labels_only else MappedShard)(plan, index, **arrays)
 
 
 def _arrival(record: dict) -> Arrival:
@@ -354,6 +367,15 @@ def _read_physical(path: Path, plan: SamplingPlan, records: dict) -> CircuitBund
 
 def open_dataset(path: Path, *, expected_split: str | None = None) -> MappedDataset:
     """Verify all completed shard manifests and memory-map the immutable arrays."""
+    return _open_dataset(path, expected_split, labels_only=False)
+
+
+def open_labels(path: Path, *, expected_split: str | None = None) -> MappedLabels:
+    """Verify and map the original label arrays without opening detector or circuit files."""
+    return _open_dataset(path, expected_split, labels_only=True)
+
+
+def _open_dataset(path: Path, expected_split: str | None, *, labels_only: bool):
     manifest = read_json(path / "manifest.json")
     if manifest.get("schema_version") != DATASET_SCHEMA or manifest.get("status") != "complete":
         raise ArtifactError("incomplete dataset or incompatible dataset schema")
@@ -368,10 +390,12 @@ def open_dataset(path: Path, *, expected_split: str | None = None) -> MappedData
         count = (plan.total_rows + plan.chunk_rows - 1) // plan.chunk_rows
         if len(manifest["shards"]) != count:
             raise ArtifactError("dataset shard inventory does not match its complete row count")
-        bundle = _read_physical(path, plan, manifest["physical"])
-        shards = tuple(_read_shard(path / "shards" / str(index), plan, index, entry)
+        shards = tuple(_read_shard(path / "shards" / str(index), plan, index, entry, labels_only=labels_only)
                        for index, entry in enumerate(manifest["shards"]))
-        return MappedDataset(plan, bundle, shards, str(file_integrity(path / "manifest.json")["sha256"]))
+        digest = str(file_integrity(path / "manifest.json")["sha256"])
+        if labels_only:
+            return MappedLabels(plan, shards, digest)
+        return MappedDataset(plan, _read_physical(path, plan, manifest["physical"]), shards, digest)
     except ArtifactError:
         raise
     except (KeyError, TypeError, ValueError, OSError, EOFError) as exc:

@@ -13,7 +13,7 @@ evidence for each phase determine whether its claim is established.
 | C4 | Data, training, and resume preserve identities, random streams, and update budgets. | C1–C3 | Packed-array and pairing checks, analytic SGD recurrence, fault injection, and exact full-model replay | Verified locally and independently reviewed. [P4 evidence](P4.md) |
 | C5 | Frozen G/F/S predictions and paired estimates use the same complete trajectories and checkpoint. | C1–C4 | Parity truth tables, signed paired counts, independent interval and bootstrap checks, and integrated distance-5 inference | Verified locally and independently reviewed. [P5 evidence](P5.md) |
 | C6 | S+/W/D match continuation controls while varying the declared training context. | C2–C5 | Common fork, independent draw and mask checks, forced W/D equivalence, matched paired inference, and fresh-process replay | Verified locally and independently reviewed. [P6 evidence](P6.md) |
-| C7 | Execution and export retain evidence sufficient to reconstruct the analysis. | C4–C6 | Scheduler rendering, archive integrity, relocation and local reconstruction, and allocated-node validation | Pending P7 |
+| C7 | Execution and export retain evidence sufficient to reconstruct the analysis. | C4–C6 | PBS rendering and receipt checks, archive integrity, clean-room reconstruction, and separate re-decoding | Verified locally and independently reviewed. Allocated-node acceptance pending. [P7 evidence](P7.md) |
 
 ## Recording evidence
 

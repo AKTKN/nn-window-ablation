@@ -8,6 +8,9 @@ query interface [1, 2]. The window targets follow the direct logical-contributio
 composition described in the scientific documents, with Zhang et al. as the
 reference for that construction [3].
 
+**[Getting started on a local CPU](docs/GETTING_STARTED.md)** ·
+**[Install and run on a PBS cluster](docs/04_cluster_workflow.md)**
+
 ## Current state
 
 P0 provides an installed `nnwa validate` command, typed configuration, and
@@ -18,6 +21,8 @@ decoder, its objective, and a bounded CPU profile. P4 provides immutable
 datasets, fixed-update training, and exact local checkpoint replay. P5
 provides frozen paired inference and whole-trajectory statistical analysis.
 P6 provides matched S+/W/D continuation and checks those controls during analysis.
+P7 provides PBS job rendering, verified portable exports, and clean-room
+reanalysis. Allocated-node acceptance remains pending.
 
 See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for phase status and
 [AGENTS.md](AGENTS.md) for development contracts.
@@ -46,10 +51,11 @@ definition is in [02_ablation_protocol.md](docs/02_ablation_protocol.md).
 
 | File | Contents |
 |---|---|
+| [Getting started](docs/GETTING_STARTED.md) | Install, generate a small dataset, train, evaluate, and replay archived statistics. |
 | [01_theory_and_decoder.md](docs/01_theory_and_decoder.md) | Logical contributions, exact label construction, window composition, and the Lange decoder. |
 | [02_ablation_protocol.md](docs/02_ablation_protocol.md) | Physical task, G/F/S and S+/W/D, statistical estimands, and pilot-to-main budgeting. |
 | [03_repository_design.md](docs/03_repository_design.md) | Module interfaces, Hydra, dataset format, dependencies, and planned commands. |
-| [04_cluster_workflow.md](docs/04_cluster_workflow.md) | Conda, PBS, CPU profiling, storage visibility, and compressed result transfer. |
+| [PBS cluster guide](docs/04_cluster_workflow.md) | Linux and Conda setup, fixed checkout, PBS render/submit/status, resume, and result transfer. |
 | [05_implementation_phases.md](docs/05_implementation_phases.md) | P0–P7 scope, acceptance criteria, and integration checks for later implementation. |
 | [conf/README.md](src/nn_window_ablation/conf/README.md) | Configuration groups and unresolved budget fields. |
 | [environments/README.md](environments/README.md) | Candidate dependency installation and environment records. |
@@ -62,7 +68,7 @@ definition is in [02_ablation_protocol.md](docs/02_ablation_protocol.md).
 | `src/nn_window_ablation/` | Simulation, features, model, datasets, and training. |
 | `src/nn_window_ablation/conf/` | Hydra groups; the initial experiment is `pilot_d5`. |
 | [tests/](tests/README.md) | Shared test setup, CPU checks, and phase test plan. |
-| `scripts/pbs/` | Site-adjustable `.pbs.example` files; no scheduler submission logic in scientific modules. |
+| `scripts/pbs/` | Reference PBS templates. Render site-specific jobs with `nnwa pbs render`. |
 | `third_party/` | Upstream provenance and future source-integration record. |
 | `environment.yml`, `pyproject.toml` | Conda base intent and candidate Python dependencies. |
 | `data/`, `runs/`, `exports/` | Untracked output locations for generated artifacts. |
@@ -163,6 +169,21 @@ and the same `pilot-test` dataset and window settings. Analyze the three manifes
 paths together with `analysis=adaptation` and the explicit analysis settings above.
 This produces S+−W and W−D contrasts and checks the matched training receipts.
 [P6 verification](docs/verification/P6.md)
+
+## Export and replay results
+
+Use the held-out dataset and completed report from the example above.
+
+```bash
+conda run -n nn_window_decoding nnwa export --dataset data/pilot-test \
+  --report runs/pilot-stats/report.json --output pilot-results.tar.gz
+conda run -n nn_window_decoding nnwa extract pilot-results.tar.gz incoming
+conda run -n nn_window_decoding nnwa reanalyze --bundle incoming --output replay
+```
+
+The default export supports statistics from archived predictions and labels.
+Add `--include-detectors --include-checkpoints` to support re-decoding with
+the retained checkpoint and data. [Export schema and checks](docs/verification/P7.md)
 
 ## References
 

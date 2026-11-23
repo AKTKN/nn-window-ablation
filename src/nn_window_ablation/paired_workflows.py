@@ -7,7 +7,7 @@ import csv
 
 from .artifacts import ArtifactError, atomic_file, file_integrity, read_json, staged_directory, verify_file, write_json
 from .config import ConfigError, ResolvedConfig, require_execution_config, validate_run_name
-from .runtime import configure_cpu_runtime
+from .runtime import configure_cpu_runtime, runtime_observation
 from .workflows import _environment_record
 
 
@@ -194,12 +194,12 @@ def evaluate_workflow(
         write_json(staging / "manifest.json", {
             "schema_version": PREDICTION_SCHEMA, "status": "complete", "data": _dataset_record(mapped),
             "conditions": conditions, "shards": inventory, "resolved_config": config.to_record(),
-            "overrides": list(overrides), "environment": _environment_record(),
+            "overrides": list(overrides), "environment": _environment_record(), "runtime": runtime_observation(config.data),
         })
     return destination / "manifest.json"
 
 
-def _read_manifest(path: Path, mapped) -> dict:
+def _read_manifest(path: Path, mapped, *, verify_queries: bool = True) -> dict:
     from .continuation import is_digest
     from .evaluation import CheckpointProvenance
     from .windows import Buffers, build_observation_layout, select_window
@@ -225,7 +225,7 @@ def _read_manifest(path: Path, mapped) -> dict:
         ):
             raise ArtifactError("prediction inference settings differ from the frozen G/F/S policy")
         geometry = resolved["geometry"]
-        layout = build_observation_layout(mapped.bundle)
+        layout = build_observation_layout(mapped.bundle) if verify_queries else None
         buffers = Buffers(geometry["left_buffer"], geometry["right_buffer"])
         for mode, entry in record["conditions"].items():
             if entry["mode"] != mode:
@@ -240,13 +240,17 @@ def _read_manifest(path: Path, mapped) -> dict:
                     raise ArtifactError("invalid matching baseline provenance")
                 continue
             provenance = CheckpointProvenance(**entry["checkpoint"])
-            targets = (layout.global_query,) if mode == "G" else layout.queries
-            queries = [_query_record(select_window(layout, target, buffers if mode == "S" else None)) for target in targets]
+            indices = [None] if mode == "G" else list(range(mapped.plan.core_count))
             if (
                 provenance.condition(mode) != entry["condition"] or not is_digest(entry["model_state_sha256"])
-                or entry["queries"] != queries
+                or [query["core_index"] for query in entry["queries"]] != indices
             ):
                 raise ArtifactError("prediction condition, query partition or checkpoint provenance differs")
+            if layout is not None:
+                targets = (layout.global_query,) if mode == "G" else layout.queries
+                queries = [_query_record(select_window(layout, target, buffers if mode == "S" else None)) for target in targets]
+                if entry["queries"] != queries:
+                    raise ArtifactError("prediction condition, query partition or checkpoint provenance differs")
         return record
     except ArtifactError:
         raise
@@ -352,29 +356,16 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         file.write(contents.getvalue().encode("utf-8"))
 
 
-def analyze_workflow(
-    config: ResolvedConfig, *, overrides: tuple[str, ...] = (), sweep_index: int | None = None,
-) -> Path:
-    check_paired_execution("analyze", config)
-    configure_cpu_runtime(config.runtime, config.data)
+def summarize_predictions(mapped, inputs: list[tuple[Path, dict, dict]], policy, contrast_names: list[str]) -> dict:
+    """Calculate P5 statistics given verified label and prediction receipts."""
     import numpy as np
 
     from .analysis import (
-        AnalysisPolicy, CoreDiagnostics, PairedCounts, _count_pairs, binomial_interval, core_disagreements, summarize_pair,
+        CoreDiagnostics, PairedCounts, _count_pairs, binomial_interval, core_disagreements, summarize_pair,
     )
     from .evaluation import compose_core_decisions
 
-    _, mapped = _dataset(config)
-    settings = config.analysis
-    policy = AnalysisPolicy(
-        settings.bootstrap_replicates, settings.bootstrap_seed, settings.sparse_rule,
-        settings.ratio_min_denominator_failures,
-    )
-    inputs = []
-    for name in settings.predictions:
-        path = Path(name)
-        receipt = file_integrity(path)
-        inputs.append((path, _read_manifest(path, mapped), receipt))
+    shots = mapped.plan.total_rows
     conditions = {}
     for _, manifest, _ in inputs:
         for entry in manifest["conditions"].values():
@@ -382,7 +373,7 @@ def analyze_workflow(
             if label in conditions:
                 raise ArtifactError(f"duplicate prediction condition {label}")
             conditions[label] = entry
-    comparisons = _check_comparisons(conditions, settings.contrasts)
+    comparisons = _check_comparisons(conditions, contrast_names)
     core = {label: CoreDiagnostics() for label, entry in conditions.items() if entry["mode"] in ("F", "S")}
     failures = dict.fromkeys(conditions, 0)
     losses = {label: np.zeros(12 if label in core else 1) for label, entry in conditions.items() if entry["mode"] != "MWPM"}
@@ -410,7 +401,6 @@ def analyze_workflow(
 
     for path, _, receipt in inputs:
         verify_file(path, receipt)
-    shots = mapped.plan.total_rows
     rates = {}
     for label, count in failures.items():
         rates[label] = {
@@ -437,21 +427,49 @@ def analyze_workflow(
         if direct != sum_of_parts:
             raise ArtifactError("primary paired contrast decomposition disagrees at the count level")
         decomposition = {"direct_numerator": direct, "sum_of_parts_numerator": sum_of_parts, "denominator": shots}
+    return {
+        "conditions": conditions, "rates": rates, "contrasts": contrasts, "primary_decomposition": decomposition,
+        "analysis": {**policy.record(), "contrast_order": contrast_names},
+    }
+
+
+def write_analysis_tables(root: Path, summary: dict) -> None:
+    rates, contrasts = summary["rates"], summary["contrasts"]
+    _write_csv(root / "rates.csv", [
+        {"condition": label, "shots": row["shots"], "failures": row["failures"], "ler": row["ler"],
+         "lower": row["wilson_interval"][0], "upper": row["wilson_interval"][1]} for label, row in rates.items()
+    ])
+    _write_csv(root / "contrasts.csv", [
+        {"contrast": name, "n10": row["n10"], "n01": row["n01"], "difference": row["difference"],
+         "lower": row["interval"][0], "upper": row["interval"][1], "interval_method": row["interval_method"]}
+        for name, row in contrasts.items()
+    ])
+
+
+def analyze_workflow(
+    config: ResolvedConfig, *, overrides: tuple[str, ...] = (), sweep_index: int | None = None,
+) -> Path:
+    check_paired_execution("analyze", config)
+    configure_cpu_runtime(config.runtime, config.data)
+    from .analysis import AnalysisPolicy
+
+    _, mapped = _dataset(config)
+    settings = config.analysis
+    policy = AnalysisPolicy(
+        settings.bootstrap_replicates, settings.bootstrap_seed, settings.sparse_rule,
+        settings.ratio_min_denominator_failures,
+    )
+    inputs = []
+    for name in settings.predictions:
+        path = Path(name)
+        receipt = file_integrity(path)
+        inputs.append((path, _read_manifest(path, mapped), receipt))
+    summary = summarize_predictions(mapped, inputs, policy, settings.contrasts)
     destination = _run_path(config, sweep_index)
     with staged_directory(destination) as staging:
-        _write_csv(staging / "rates.csv", [
-            {"condition": label, "shots": row["shots"], "failures": row["failures"], "ler": row["ler"],
-             "lower": row["wilson_interval"][0], "upper": row["wilson_interval"][1]} for label, row in rates.items()
-        ])
-        _write_csv(staging / "contrasts.csv", [
-            {"contrast": name, "n10": row["n10"], "n01": row["n01"], "difference": row["difference"],
-             "lower": row["interval"][0], "upper": row["interval"][1], "interval_method": row["interval_method"]}
-            for name, row in contrasts.items()
-        ])
+        write_analysis_tables(staging, summary)
         write_json(staging / "report.json", {
-            "schema_version": 1, "status": "complete", "data": _dataset_record(mapped), "conditions": conditions,
-            "rates": rates, "contrasts": contrasts, "primary_decomposition": decomposition,
-            "analysis": {**policy.record(), "contrast_order": settings.contrasts},
+            "schema_version": 1, "status": "complete", "data": _dataset_record(mapped), **summary,
             "inputs": [{"path": str(path), **receipt} for path, _, receipt in inputs],
             "resolved_config": config.to_record(), "overrides": list(overrides), "environment": _environment_record(),
         })

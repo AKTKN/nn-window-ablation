@@ -115,6 +115,7 @@ def generate_workflow(config: ResolvedConfig, *, overrides: tuple[str, ...] = ()
     check_execution("generate", config)
     configure_cpu_runtime(config.runtime, config.data)
     from .data import SamplingPlan, write_dataset
+    from .runtime import runtime_observation
 
     bundle, namespace = _circuit_and_namespace(config)
     plan = SamplingPlan.from_circuit(bundle, namespace, chunk_rows=config.data.shard_shots, total_rows=config.data.shots)
@@ -122,7 +123,7 @@ def generate_workflow(config: ResolvedConfig, *, overrides: tuple[str, ...] = ()
     path = config.paths.data_root / (config.data.id or plan.dataset_id)
     write_dataset(path, plan, bundle, provenance={
         "command": "generate", "resolved_config": config.to_record(), "overrides": list(overrides),
-        "environment": _environment_record(),
+        "environment": _environment_record(), "runtime": runtime_observation(config.data),
     })
     return path / "manifest.json"
 
@@ -214,8 +215,9 @@ def _resume_environment(record: dict) -> dict:
     }
 
 
-def _package_source_sha256() -> str:
-    root = Path(__file__).resolve().parent
+def _package_source_sha256(root: Path | None = None) -> str:
+    if root is None:
+        root = Path(__file__).resolve().parent
     digest = sha256()
     for path in sorted(item for item in root.rglob("*") if item.suffix in (".py", ".yaml")):
         digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")

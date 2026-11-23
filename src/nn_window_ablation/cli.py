@@ -15,7 +15,7 @@ from .config import ConfigError, new_run_name, resolve_config
 from .workflows import ValidationJob, check_workflow, publish_validation, reserve_run_directory
 
 
-USAGE = "usage: nnwa {validate,generate,train,evaluate,analyze} [Hydra options and overrides]"
+USAGE = "usage: nnwa {validate,generate,train,evaluate,analyze,pbs,export,extract,reanalyze} [arguments]"
 
 
 def _publish_jobs(command: str, jobs: list[ValidationJob], invocation_dir: Path) -> list[Path]:
@@ -53,6 +53,10 @@ def main() -> int:
     if command in ("-h", "--help"):
         print(USAGE)
         return 0
+    if command in ("pbs", "export", "extract", "reanalyze"):
+        from .operator_cli import main as operator_main
+
+        return operator_main(command, arguments)
     if command not in ("validate", "generate", "train", "evaluate", "analyze"):
         print(f"nnwa: unknown command {command!r}\n{USAGE}", file=sys.stderr)
         return 2

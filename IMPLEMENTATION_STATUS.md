@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated 2026-11-23. P0 through P6 are implemented and verified locally.
+Last updated 2026-11-23. P0 through P7 are implemented and verified locally.
 
 ## Delivered structure
 
@@ -13,6 +13,8 @@ The shared query decoder supports CPU forward/backward steps. P4 adds immutable
 datasets, fixed-update training, and exact CPU checkpoint replay. P5 uses one
 frozen checkpoint for paired G/F/S and reports whole-trajectory statistics.
 P6 runs matched S+/W/D continuation and verifies the controls in paired analysis.
+P7 renders PBS jobs, records execution evidence, and reconstructs analyses
+from verified portable bundles.
 
 ## GitHub publication
 
@@ -39,13 +41,23 @@ checked byte for byte after removing them from the Git index.
 | P4 | Datasets, training, checkpoints, deterministic resume | Implemented and independently verified locally. Allocated-node checks pending. |
 | P5 | Paired G/F/S evaluation and uncertainty | Implemented and independently verified locally. Main-study choices pending. |
 | P6 | Matched S+/W/D continuation | Implemented and independently verified locally. Allocated-node and campaign checks pending. |
-| P7 | PBS campaign, export, and local re-analysis | Not implemented; script templates only. |
+| P7 | PBS workflows, export, and local reanalysis | Implemented and independently verified locally. Allocated-node acceptance pending. |
 
 The phase contract is [05_implementation_phases.md](docs/05_implementation_phases.md).
 The scientific pilot is $d=5$; a small $d=3$ unit fixture is permitted in P1 but is
 not a required training stage or the pilot.
 
 ## Validation record
+
+### P7
+
+All 36 focused tests and all 240 independently run ordinary tests passed.
+The distance-5 fixtures replayed G/F/S statistics in a fresh process from
+detector-free bundles and separately reloaded a checkpoint for re-decoding.
+They also reproduced archived S+/W/D contrasts. PBS rendering, job receipts,
+and portable archive verification were checked locally. The allocated-node
+probe, submission, interruption and resume, and remote transfer gates remain
+pending. [P7 verification](docs/verification/P7.md) · [PBS cluster guide](docs/04_cluster_workflow.md)
 
 ### P6
 
