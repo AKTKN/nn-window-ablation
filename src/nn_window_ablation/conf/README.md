@@ -60,7 +60,7 @@ thread. `test_cpu` declares one application process, one intra-operation thread,
 one inter-operation thread, and an eight-CPU allocation cap for local tests.
 Thread settings are independent of distance and model dimensions.
 
-For numerical startup, provide `runtime.allocated_cpus` explicitly. The CPU
+For numerical startup, provide `runtime.allocated_cpus` explicitly. The general CPU
 budget charges each application process for the intra-op count times the
 inter-op count, plus one CPU for each loader worker and each parallel sampler
 worker. A single sampler runs inline. `runtime.configure_cpu_runtime` checks
@@ -132,7 +132,25 @@ Set `evaluation.resume=true` to reopen an existing evaluation directory and
 verify its already committed shards. Give each new evaluation its own run name.
 Resume sweep children individually by using their immediate parent as
 `paths.run_root` and quoting the child number as the string `run_name`.
-[Reliability verification](../../../docs/verification/reliability.md)
+
+| Evaluation option | Default | Effect |
+|---|---|---|
+| `evaluation.workers` | `1` | Inline evaluation at one; Linux spawn pool above one. |
+| `evaluation.worker_threads` | `null` | Uses `runtime.intraop_threads` inline and one thread in the pool. An explicit inline value must equal `runtime.intraop_threads`. |
+| `evaluation.max_in_flight` | `null` | Allows one task inline and twice the worker count in the pool. A positive pool limit can be smaller than the worker count. |
+
+Evaluation uses `runtime.processes=1`, `data.num_workers=0`, and
+`data.sampling_processes=1`. The pool uses a one-thread coordinator and
+one inter-op thread per worker. Select `runtime=local_cpu` or explicitly set
+`runtime.intraop_threads=1` and `runtime.interop_threads=1`. The allocation
+and process affinity must cover `evaluation.workers * evaluation.worker_threads`
+CPUs. A spare CPU can host coordinator commits, otherwise the coordinator
+shares the allocated CPUs with the pool. Inherited native-library thread
+variables must be positive integers no larger than the effective worker thread
+count. The effective numerical thread settings and `evaluation.batch_size`
+must match on resume. Change worker count, allocation, or in-flight limit as
+needed. Attempt logs record the layout that actually executed.
+[Parallel evaluation contract](../../../docs/verification/parallel_evaluation.md)
 
 `analyze` uses the same `data.id` and the manifest paths in `analysis.predictions`.
 It requires `analysis.bootstrap_replicates`, `analysis.bootstrap_seed`, and

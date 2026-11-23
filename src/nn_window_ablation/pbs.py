@@ -12,7 +12,10 @@ import subprocess
 import sys
 
 from .artifacts import ArtifactError, atomic_file, file_integrity, read_json, verify_file, write_json
-from .config import ConfigError, resolve_config, validate_cpu_budget, validate_run_name
+from .config import (
+    ConfigError, evaluation_worker_threads, resolve_config, validate_cpu_budget, validate_evaluation_budget,
+    validate_run_name,
+)
 from .workflows import check_workflow
 
 
@@ -294,6 +297,7 @@ def _command(job: JobSpec, artifact: Path) -> list[str]:
 
 
 def _verified_artifact(job: JobSpec, config, path: Path) -> tuple[dict, dict]:
+    intraop = config.runtime.intraop_threads
     if job.stage in ("train", "resume"):
         from .checkpoints import load_checkpoint
         from .execution import _resume_contract
@@ -346,6 +350,7 @@ def _verified_artifact(job: JobSpec, config, path: Path) -> tuple[dict, dict]:
                     for _ in _read_shard(path, manifest, shard):
                         pass
         actual = manifest["runtime"]
+        intraop = evaluation_worker_threads(config.runtime, config.evaluation)
     elif job.stage == "profile":
         profile = read_json(path)
         if profile.get("runtime", {}).get("torch_intraop") != job.threads or "mean_seconds" not in profile:
@@ -355,7 +360,7 @@ def _verified_artifact(job: JobSpec, config, path: Path) -> tuple[dict, dict]:
         actual = {}
     if job.stage != "probe" and (
         actual["torch_intraop"], actual["torch_interop"]
-    ) != (config.runtime.intraop_threads, config.runtime.interop_threads):
+    ) != (intraop, config.runtime.interop_threads):
         raise ArtifactError("workflow PyTorch threads differ from the planned runtime")
     return {"path": str(path), **file_integrity(path)}, actual
 
@@ -375,6 +380,12 @@ def execute_job(job: JobSpec) -> int:
         "torch_interop_requested": config.runtime.interop_threads,
         "workers": config.data.num_workers, "sampling_processes": config.data.sampling_processes,
     }
+    if job.stage == "evaluate":
+        record["resolved_runtime"].update(
+            evaluation_workers=config.evaluation.workers,
+            evaluation_worker_threads=evaluation_worker_threads(config.runtime, config.evaluation),
+            evaluation_max_in_flight=config.evaluation.max_in_flight,
+        )
     write_json(status, record)
     code = None
     artifact = _artifact_path(job, config)
@@ -391,7 +402,7 @@ def execute_job(job: JobSpec) -> int:
             raise ArtifactError("installed package files differ from the planned checkout")
         if any(not path.is_dir() for path in (config.paths.data_root, config.paths.run_root)):
             raise ArtifactError("planned data and run roots must be visible directories on the compute node")
-        required = validate_cpu_budget(config.runtime, config.data)
+        required = validate_evaluation_budget(config) if job.stage == "evaluate" else validate_cpu_budget(config.runtime, config.data)
         available = observed["pbs_ncpus"]
         if required > len(observed["cpu_affinity"]) or (available is not None and required > available):
             raise ArtifactError("numerical CPU budget exceeds observed compute allocation")

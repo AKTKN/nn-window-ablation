@@ -1,8 +1,31 @@
 """CPU process startup for workflows that perform numerical work."""
 
 import os
+from contextlib import contextmanager
 
 from .config import ConfigError, DataConfig, RuntimeConfig, validate_cpu_budget
+
+
+NATIVE_THREAD_VARIABLES = (
+    "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "BLIS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS",
+)
+
+
+@contextmanager
+def native_thread_limits(threads: int):
+    """Set the environment inherited by spawned processes."""
+    prior = {name: os.environ.get(name) for name in NATIVE_THREAD_VARIABLES}
+    try:
+        for name in prior:
+            os.environ[name] = str(threads)
+        yield
+    finally:
+        for name, value in prior.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def runtime_observation(data: DataConfig) -> dict:
@@ -23,14 +46,7 @@ def configure_cpu_runtime(runtime: RuntimeConfig, data: DataConfig) -> None:
         raise ConfigError(f"runtime requires {required} CPUs, exceeding process CPU affinity")
 
     # Set native-library limits before PyTorch or its numerical dependencies load.
-    for variable in (
-        "OMP_NUM_THREADS",
-        "MKL_NUM_THREADS",
-        "OPENBLAS_NUM_THREADS",
-        "BLIS_NUM_THREADS",
-        "VECLIB_MAXIMUM_THREADS",
-        "NUMEXPR_NUM_THREADS",
-    ):
+    for variable in NATIVE_THREAD_VARIABLES:
         os.environ[variable] = str(runtime.intraop_threads)
 
     import torch

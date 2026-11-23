@@ -103,6 +103,11 @@ environment for a checkpoint from before this change.
 
 ## Evaluation transaction and schema
 
+This section records the original schema-2 serial transaction. The parallel
+evaluation update introduced schema 3, task-attempt staging, and arbitrary
+verified committed subsets. See the
+[current evaluation contract](parallel_evaluation.md) for new runs and resume.
+
 New runs reserve a directory exclusively. An immutable `contract.json`
 binds the dataset manifest and checkpoint content digests, checkpoint
 provenance and state hash, query definitions, geometry, availability and

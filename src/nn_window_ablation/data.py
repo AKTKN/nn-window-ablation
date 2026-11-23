@@ -378,6 +378,10 @@ class OpenShard:
     def shot_ids(self) -> NDArray[np.int64]:
         return self._array("shot_ids").copy()
 
+    @property
+    def mapped_arrays(self) -> int:
+        return len(self._arrays)
+
     def read_labels(self, rows: slice | NDArray[np.int64] = slice(None)) -> tuple[NDArray, NDArray]:
         global_labels = np.unpackbits(
             self._array("global_labels")[rows], axis=1, count=1, bitorder=BITORDER,

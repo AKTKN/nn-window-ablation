@@ -1,6 +1,7 @@
 """Frozen global and core-query inference on complete detector trajectories."""
 
 from dataclasses import dataclass
+from time import perf_counter
 
 import numpy as np
 from numpy.typing import NDArray
@@ -150,16 +151,26 @@ class FrozenEvaluator:
         return self._views[mode]
 
     @torch.inference_mode()
-    def logits(self, mode: str, detectors: NDArray[np.bool_], shot_ids: NDArray[np.int64]) -> NDArray[np.float32]:
+    def logits(
+        self, mode: str, detectors: NDArray[np.bool_], shot_ids: NDArray[np.int64], *, timings: dict | None = None,
+    ) -> NDArray[np.float32]:
         """Return rows ordered by trajectory, and columns by global/core query."""
         if self.model.training or any(module.training for module in self.model.modules()):
             raise ValueError("frozen evaluation requires evaluation mode for every model module")
         output = []
+        feature_seconds = forward_seconds = 0.0
         for view in self.views(mode):
+            started = perf_counter()
             cropped = crop_observations(view, detectors, shot_ids)
             examples = build_features(cropped, self.geometry)
             inputs = prepare_model_batch(batch_features(examples), distance=self.layout.distance)
+            prepared = perf_counter()
             output.append(self.model(inputs).numpy())
+            feature_seconds += prepared - started
+            forward_seconds += perf_counter() - prepared
+        if timings is not None:
+            timings[f"features_{mode}"] += feature_seconds
+            timings[f"forward_{mode}"] += forward_seconds
         logits = np.column_stack(output)
         if logits.shape != (len(shot_ids), len(self.views(mode))) or not np.isfinite(logits).all():
             raise ValueError("model returned incompatible or nonfinite query logits")

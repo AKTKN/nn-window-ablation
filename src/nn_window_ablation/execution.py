@@ -200,7 +200,13 @@ def _terminal_validation(trainer, objective, mapped) -> dict:
 
 
 def _resume_contract(record: dict) -> dict:
-    return {**record, "checkpoint": {**record["checkpoint"], "resume_from": None, "init_from": None}}
+    return {
+        **record, "checkpoint": {**record["checkpoint"], "resume_from": None, "init_from": None},
+        "evaluation": {
+            key: value for key, value in record["evaluation"].items()
+            if key not in ("workers", "worker_threads", "max_in_flight")
+        },
+    }
 
 
 def _resume_environment(record: dict) -> dict:

@@ -84,7 +84,7 @@ raise SystemExit(main())
         assert child.stdout.readline().strip() == b"P7_SHARD_BARRIER"
         committed = destination / "shards/0/receipt.json"
         observed = file_integrity(committed)
-        assert (destination / "shards/.pending/shot_ids.npy").is_file()
+        assert len(list(destination.glob(".evaluation-staging/*/1/shot_ids.npy"))) == 1
         assert not (destination / "manifest.json").exists()
         with pytest.raises(ArtifactError, match="another process"):
             evaluate_workflow(evaluation("crash", resume=True))
@@ -93,7 +93,7 @@ raise SystemExit(main())
             child.kill()
         child.communicate(timeout=15)
     assert child.returncode != 0
-    assert (destination / "shards/.pending").exists()  # SIGKILL skipped Python cleanup.
+    assert (destination / ".evaluation-staging").exists()  # SIGKILL skipped Python cleanup.
 
     def analysis(name, source):
         return resolve(
@@ -118,9 +118,9 @@ raise SystemExit(main())
 
     predictions = []
     original = FrozenEvaluator.logits
-    def inspect(self, mode, detectors, ids):
+    def inspect(self, mode, detectors, ids, **kwargs):
         predictions.append((mode, tuple(int(shot) & 0xFFFFFFFF for shot in ids)))
-        return original(self, mode, detectors, ids)
+        return original(self, mode, detectors, ids, **kwargs)
     monkeypatch.setattr(FrozenEvaluator, "logits", inspect)
     repaired = evaluate_workflow(evaluation("crash", resume=True))
     assert predictions == [("G", (2,)), ("F", (2,)), ("S", (2,))]

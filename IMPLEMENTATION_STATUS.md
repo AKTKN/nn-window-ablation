@@ -17,6 +17,8 @@ P7 renders PBS jobs, records execution evidence, and reconstructs analyses
 from verified portable bundles.
 The reliability update adds bounded dataset readers, periodic checkpoints,
 and transactional evaluation resume.
+Multicore Phase 2 adds a bounded Linux spawn pool for frozen, saved-shot
+evaluation and verified resume across worker counts.
 
 ## GitHub publication
 
@@ -50,6 +52,19 @@ The scientific pilot is $d=5$; a small $d=3$ unit fixture is permitted in P1 but
 not a required training stage or the pilot.
 
 ## Validation record
+
+### Multicore Phase 2
+
+The local cumulative suites passed 291 ordinary tests and 17 resource tests.
+The genuine distance-5 fixture and a 17-shot installed-command smoke matched
+prediction bytes for one, two and four workers, including G/F/S and MWPM.
+Process interruption checks preserved out-of-order commits and resumed
+with a different worker count. Completed and resumed predictions passed
+whole-trajectory analysis, compact export/reanalysis, and PBS artifact checks.
+The smoke retained startup-inclusive timing, sampled process-tree RSS,
+I/O and attempt records. Compute-node checks and the required multicore
+audit after the next two implementation phases remain pending.
+[Parallel evaluation verification](docs/verification/parallel_evaluation.md)
 
 ### Reliability update
 

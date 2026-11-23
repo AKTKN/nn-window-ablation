@@ -97,9 +97,23 @@ manifest binds the checkpoint hash, shot IDs, and query settings. Add
 `evaluation.matching=true` to include matching with the original detector
 error model.
 
-If evaluation stops, repeat the same command and add
-`evaluation.resume=true`. The final manifest becomes available to analysis
-after every expected shard is verified and committed.
+On Linux, use a persistent pool when multiple CPUs are allocated. This example
+uses up to four one-thread workers and at most eight outstanding shard tasks.
+
+```bash
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+export BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+nnwa evaluate runtime=local_cpu runtime.allocated_cpus=4 run_name=paired-parallel \
+  evaluation=paired evaluation.workers=4 evaluation.worker_threads=1 \
+  evaluation.max_in_flight=8 data.id=held checkpoint.path=runs/base/checkpoint.pt
+```
+
+If evaluation stops, repeat the command with the same run name and add
+`evaluation.resume=true`. You can change the worker count, CPU allocation and
+in-flight limit while keeping the per-worker threads and batch size fixed.
+Resume verifies the committed shards and fills the gaps. Analysis can use the
+final manifest after exact coverage has been committed.
+[Parallel evaluation and resume](verification/parallel_evaluation.md)
 
 Read `runs/summary/rates.csv` for shot counts, failures, logical error rates,
 and Wilson intervals. Read `contrasts.csv` for signed paired differences and
@@ -130,8 +144,8 @@ See `manifest.json` for their relative paths.
 [Export schema and checks](verification/P7.md)
 
 An included terminal base checkpoint can also initialize a new continuation.
-Exact resume of an interrupted run uses the original resolved paths, code, and
-runtime configuration.
+Exact training resume uses the original resolved paths, code, and runtime
+configuration.
 
 For S+, W, and D, use the matched continuation command from the README.
 The three arms share a base checkpoint, new trajectory/core draws, and update

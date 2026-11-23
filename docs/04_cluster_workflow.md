@@ -252,12 +252,20 @@ data and optimizer budget. Select the respective training preset in each.
 Run their paired evaluations with one held-out dataset and identical deployment
 windows. [Matched continuation](verification/P6.md)
 
+For parallel evaluation, set the job's `threads` to 1 and include
+`evaluation.workers=N`, `evaluation.worker_threads=K`, and optionally
+`evaluation.max_in_flight=L` in its overrides. Request at least `N * K` CPUs
+and allow memory for a separate model in each active worker. The local
+verification covers PBS configuration and artifact checks. Allocation,
+filesystem, and performance checks on a compute node are pending.
+
 To resume an interrupted evaluation, render another `evaluate` plan with the
 same run name and input content, a fresh `receipt_dir`, and
-`evaluation.resume=true` in its overrides. The runner verifies existing
-commits and fills only missing shards. A changed or corrupt committed shard
-requires investigation or a new evaluation run.
-[Reliability and artifact verification](verification/reliability.md)
+`evaluation.resume=true` in its overrides. Worker count and outstanding-task
+limit may change at fixed numerical settings and batch size. The runner
+verifies existing commits and fills only missing shards. A changed or corrupt
+committed shard requires investigation or a new evaluation run.
+[Parallel evaluation and artifact verification](verification/parallel_evaluation.md)
 
 ## 5. Analyze, transfer, and verify locally
 

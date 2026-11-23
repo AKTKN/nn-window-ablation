@@ -137,8 +137,11 @@ conda run -n nn_window_decoding nnwa analyze runtime=local_cpu runtime.allocated
 
 Evaluation saves shot identities, packed decisions, and logits. Use
 `evaluation.matching=true` to include the original-DEM PyMatching baseline.
+On Linux, set `evaluation.workers=4` and `runtime.allocated_cpus=4` on the
+evaluation command above to use up to four one-thread inference workers.
 For an interrupted evaluation, repeat its settings with the original output
-run name and add `evaluation.resume=true`. Verified committed shards are reused.
+run name and add `evaluation.resume=true`. Verified committed shards are reused
+even if the worker count changes. [Parallel evaluation guide](docs/verification/parallel_evaluation.md)
 Analysis writes `report.json`, `rates.csv`, and `contrasts.csv` under its run
 directory. [P5 verification](docs/verification/P5.md)
 

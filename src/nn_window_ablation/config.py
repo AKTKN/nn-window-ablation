@@ -154,6 +154,9 @@ class EvaluationConfig:
     batch_size: int
     matching: bool
     resume: bool = False
+    workers: int = 1
+    worker_threads: int | None = None
+    max_in_flight: int | None = None
 
 
 @dataclass
@@ -262,12 +265,12 @@ def resolve_config(config: DictConfig, *, invocation_dir: Path) -> ResolvedConfi
             "runtime": ("processes", "intraop_threads", "interop_threads", "allocated_cpus"),
             "data": ("replicate", "num_workers", "sampling_processes", "shots", "shard_shots", "training_chunk_shots"),
             "training": ("max_steps", "batch_size", "microbatch_size", "scheduler_step_size"),
-            "evaluation": ("batch_size",),
+            "evaluation": ("batch_size", "workers", "worker_threads", "max_in_flight"),
             "analysis": ("bootstrap_replicates", "bootstrap_seed", "sparse_rule", "ratio_min_denominator_failures"),
             "checkpoint": ("save_every_updates",),
         }.items():
             for name in names:
-                value = raw[group].get(name) if group == "checkpoint" else raw[group][name]
+                value = raw[group].get(name)
                 if value is not None and type(value) is not int:
                     raise ConfigError(f"{group}.{name} must be an integer")
         if type(raw["run_name"]) is not str:
@@ -365,6 +368,9 @@ def _validate_budgets(config: ResolvedConfig) -> None:
         ("analysis.bootstrap_replicates", config.analysis.bootstrap_replicates),
         ("analysis.ratio_min_denominator_failures", config.analysis.ratio_min_denominator_failures),
         ("evaluation.batch_size", config.evaluation.batch_size),
+        ("evaluation.workers", config.evaluation.workers),
+        ("evaluation.worker_threads", config.evaluation.worker_threads),
+        ("evaluation.max_in_flight", config.evaluation.max_in_flight),
     ):
         if value is not None and (value <= 0 or isinstance(value, float) and not isfinite(value)):
             raise ConfigError(f"{name} must be positive when provided")
@@ -405,6 +411,28 @@ def validate_cpu_budget(runtime: RuntimeConfig, data: DataConfig) -> int:
             raise ConfigError(
                 f"runtime requires {required} CPUs, exceeding runtime.allocated_cpus={runtime.allocated_cpus}"
             )
+    return required
+
+
+def evaluation_worker_threads(runtime: RuntimeConfig, settings: EvaluationConfig) -> int:
+    if settings.worker_threads is not None:
+        return settings.worker_threads
+    return runtime.intraop_threads if settings.workers == 1 else 1
+
+
+def validate_evaluation_budget(config: ResolvedConfig) -> int:
+    runtime, settings = config.runtime, config.evaluation
+    validate_cpu_budget(runtime, config.data)
+    threads = evaluation_worker_threads(runtime, settings)
+    if settings.workers == 1:
+        if threads != runtime.intraop_threads or settings.max_in_flight not in (None, 1):
+            raise ConfigError("inline evaluation requires matching runtime and worker threads and one in-flight task")
+        return runtime.intraop_threads * runtime.interop_threads
+    if (runtime.intraop_threads, runtime.interop_threads) != (1, 1):
+        raise ConfigError("parallel evaluation requires runtime.intraop_threads=1 and runtime.interop_threads=1")
+    required = settings.workers * threads
+    if runtime.allocated_cpus is not None and required > runtime.allocated_cpus:
+        raise ConfigError(f"evaluation workers require {required} CPUs, exceeding runtime.allocated_cpus")
     return required
 
 

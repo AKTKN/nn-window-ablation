@@ -8,3 +8,6 @@ update_model_state: false
 batch_size: 1
 matching: false
 resume: false
+workers: 1
+worker_threads: null
+max_in_flight: null

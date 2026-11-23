@@ -1,23 +1,41 @@
 """Publish and verify paired predictions and whole-trajectory analysis records."""
 
-from dataclasses import asdict
+from collections import defaultdict
+from contextlib import contextmanager, nullcontext
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
+from importlib import metadata
 from io import StringIO
 from pathlib import Path
+from time import perf_counter
+from typing import TYPE_CHECKING
+from uuid import uuid4
 import csv
+import fcntl
+import os
 import re
 import shutil
+import sys
 
 from .artifacts import (
     ArtifactError, _sync_directory, atomic_file, canonical_json, exclusive_lock, file_integrity, publish_directory,
     read_json, read_json_artifact, staged_directory, verify_file, write_json,
 )
-from .config import ConfigError, ResolvedConfig, require_execution_config, validate_run_name
-from .runtime import configure_cpu_runtime, runtime_observation
+from .config import (
+    ConfigError, ResolvedConfig, evaluation_worker_threads, require_execution_config, validate_evaluation_budget,
+    validate_run_name,
+)
+from .evaluation_pool import append_event, cpu_affinity, observe_process, run_pool, stop_on_signal
+from .runtime import NATIVE_THREAD_VARIABLES, configure_cpu_runtime, native_thread_limits, runtime_observation
 from .workflows import _environment_record
 
+if TYPE_CHECKING:
+    from .data import MappedDataset
+    from .evaluation import FrozenEvaluator, MatchingReference
 
-PREDICTION_SCHEMA = 2
+
+PREDICTION_SCHEMA = 3
+EVALUATION_CONTRACT_SCHEMA = 2
 PRIMARY_CONTRASTS = ("S_minus_G", "F_minus_G", "S_minus_F")
 EVALUATION_PRESETS = {
     "G": ("global", "full_closed", "identity"),
@@ -39,6 +57,7 @@ def check_paired_execution(command: str, config: ResolvedConfig) -> None:
         raise ConfigError("paired workflows require a single process and no training checkpoint operations")
     if command == "evaluate":
         settings = config.evaluation
+        validate_evaluation_budget(config)
         if (
             EVALUATION_PRESETS.get(settings.id) != (settings.query, settings.context, settings.aggregation)
             or settings.threshold != 0.5 or not settings.reset_recurrent_state_per_query or settings.update_model_state
@@ -115,70 +134,250 @@ def _query_record(view) -> dict:
 def evaluate_workflow(
     config: ResolvedConfig, *, overrides: tuple[str, ...] = (), sweep_index: int | None = None,
 ) -> Path:
+    started = perf_counter()
     check_paired_execution("evaluate", config)
-    configure_cpu_runtime(config.runtime, config.data)
-    import stim
+    settings = config.evaluation
+    threads = evaluation_worker_threads(config.runtime, settings)
+    required = validate_evaluation_budget(config)
+    affinity = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None
+    if affinity is not None and required > len(affinity):
+        raise ConfigError(f"evaluation requires {required} CPUs, exceeding process CPU affinity")
+    if settings.workers == 1:
+        with stop_on_signal() as check_stop:
+            return _run_evaluation(config, overrides, sweep_index, started, threads, (), None, check_stop)
+    if not sys.platform.startswith("linux") or affinity is None:
+        raise ConfigError("parallel evaluation requires Linux process affinity and parent-death signals")
+    for name in NATIVE_THREAD_VARIABLES:
+        inherited = os.environ.get(name)
+        if inherited is not None and (not inherited.isascii() or not inherited.isdecimal() or not 1 <= int(inherited) <= threads):
+            raise ConfigError(f"inherited {name}={inherited!r} exceeds or conflicts with evaluation worker threads={threads}")
+    allocation = config.runtime.allocated_cpus
+    if allocation > len(affinity):
+        raise ConfigError("evaluation allocation exceeds process CPU affinity")
+    slots = tuple(tuple(affinity[i:i + threads]) for i in range(0, required, threads))
+    # The coordinator can share a worker CPU when the allocation is tight.
+    coordinator_cpu = affinity[required] if allocation > required else affinity[0]
+    with stop_on_signal() as check_stop, cpu_affinity(affinity[:allocation]), native_thread_limits(1):
+        return _run_evaluation(config, overrides, sweep_index, started, threads, slots, coordinator_cpu, check_stop)
+
+
+def _evaluation_runtime(config, threads):
     import torch
 
-    from .checkpoints import load_checkpoint
-    from .evaluation import CheckpointProvenance, FrozenEvaluator, MatchingReference, model_state_sha256
-    from .execution import _package_source_sha256, _resume_environment
-    from .models.gnn_rnn import QueryDecoder
-    from .windows import Buffers
-
-    settings = config.evaluation
-    data_root, mapped = _dataset(config)
-    checkpoint = config.checkpoint.path
-    receipt = file_integrity(checkpoint)
-    payload = load_checkpoint(checkpoint)
-    verify_file(checkpoint, receipt)
-    provenance = CheckpointProvenance.from_payload(payload, receipt["sha256"], mapped.plan)
-    model = QueryDecoder.from_checkpoint(payload["model"])
-    del payload
-    geometry = config.geometry
-    evaluator = FrozenEvaluator(model, mapped.bundle, Buffers(geometry.left_buffer, geometry.right_buffer))
-    state_digest = model_state_sha256(model)
-    modes = ("G", "F", "S") if settings.id == "paired" else (settings.id,)
-    conditions = {
-        mode: {
-            "mode": mode, "condition": provenance.condition(mode), "checkpoint": asdict(provenance),
-            "model_state_sha256": state_digest, "queries": [_query_record(view) for view in evaluator.views(mode)],
-        }
-        for mode in modes
-    }
-    matching = None
-    if settings.matching:
-        dem_path = data_root / "global.dem"
-        dem_receipt = file_integrity(dem_path)
-        dem = stim.DetectorErrorModel(dem_path.read_text())
-        verify_file(dem_path, dem_receipt)
-        matching = MatchingReference(dem, detector_count=mapped.plan.detector_count)
-        conditions["MWPM"] = {
-            "mode": "MWPM", "condition": "MWPM", "checkpoint": None, "model_state_sha256": None, "queries": [],
-            "baseline": {
-                "implementation": "pymatching", "version": matching.version, "dem": dem_receipt,
-                "decompose_errors": True, "num_observables": dem.num_observables,
-                "num_detectors": dem.num_detectors, "options": "PyMatching defaults",
-            },
-        }
-    destination = _run_path(config, sweep_index)
-    request = _evaluation_request(config.to_record())
-    environment = {**_environment_record(), "package_source_sha256": _package_source_sha256()}
-    runtime = {
-        **runtime_observation(config.data),
+    return {
+        **runtime_observation(config.data), "torch_intraop": threads,
         "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
         "deterministic_warn_only": torch.is_deterministic_algorithms_warn_only_enabled(),
         "float32_matmul_precision": torch.get_float32_matmul_precision(),
         "mkldnn_enabled": torch.backends.mkldnn.enabled,
     }
-    semantic = {
-        "prediction_schema": PREDICTION_SCHEMA, "data": _dataset_record(mapped), "conditions": conditions,
-        "request": request, "checkpoint": receipt, "runtime": runtime, "environment": _resume_environment(environment),
+
+
+def _evaluation_inputs(config, mapped, data_root, modes, expected_checkpoint=None):
+    import stim
+
+    from .checkpoints import load_checkpoint
+    from .continuation import model_tensors_sha256
+    from .evaluation import CheckpointProvenance
+    from .windows import Buffers, build_observation_layout, select_window
+
+    checkpoint = config.checkpoint.path
+    receipt = expected_checkpoint if expected_checkpoint is not None else file_integrity(checkpoint)
+    if expected_checkpoint is not None:
+        verify_file(checkpoint, receipt)
+    payload = load_checkpoint(checkpoint)
+    verify_file(checkpoint, receipt)
+    provenance = CheckpointProvenance.from_payload(payload, receipt["sha256"], mapped.plan)
+    model_payload = payload["model"]
+    del payload
+    state_digest = model_tensors_sha256(model_payload["state_dict"])
+    layout = build_observation_layout(mapped.bundle)
+    geometry = config.geometry
+    buffers = Buffers(geometry.left_buffer, geometry.right_buffer)
+    conditions = {}
+    for mode in modes:
+        targets = (layout.global_query,) if mode == "G" else layout.queries
+        conditions[mode] = {
+            "mode": mode, "condition": provenance.condition(mode), "checkpoint": asdict(provenance),
+            "model_state_sha256": state_digest,
+            "queries": [_query_record(select_window(layout, target, buffers if mode == "S" else None)) for target in targets],
+        }
+    dem = None
+    if config.evaluation.matching:
+        dem_path = data_root / "global.dem"
+        dem_receipt = file_integrity(dem_path)
+        dem = stim.DetectorErrorModel(dem_path.read_text())
+        verify_file(dem_path, dem_receipt)
+        if (dem.num_detectors, dem.num_observables) != (mapped.plan.detector_count, 1):
+            raise ArtifactError("matching requires the original global-only DEM and its detector dimensions")
+        conditions["MWPM"] = {
+            "mode": "MWPM", "condition": "MWPM", "checkpoint": None, "model_state_sha256": None, "queries": [],
+            "baseline": {
+                "implementation": "pymatching", "version": metadata.version("pymatching"), "dem": dem_receipt,
+                "decompose_errors": True, "num_observables": dem.num_observables,
+                "num_detectors": dem.num_detectors, "options": "PyMatching defaults",
+            },
+        }
+    return model_payload, receipt, conditions, buffers, dem
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationTask:
+    index: int
+    attempt: str
+    contract_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationResult:
+    task: EvaluationTask
+    receipt: dict[str, int | str]
+    rows: int
+    output_bytes: int
+    output_files: int
+    worker_pid: int
+    started: float
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationFailure:
+    task: EvaluationTask
+    error: str
+
+
+@dataclass(slots=True)
+class _TaskRunner:
+    mapped: "MappedDataset"
+    evaluator: "FrozenEvaluator"
+    matching: "MatchingReference | None"
+    modes: tuple[str, ...]
+    batch_size: int
+    state_digest: str
+    contract_sha256: str
+    stage: Path
+    log: Path
+
+    def run(self, task: EvaluationTask, *, check_stop=lambda: None) -> EvaluationResult:
+        from .evaluation import model_state_sha256
+
+        if task.attempt != self.stage.name or task.contract_sha256 != self.contract_sha256:
+            raise ArtifactError(f"evaluation task {task} has incompatible attempt or run identity")
+        index = task.index
+        descriptor = self.mapped.shards[index]
+        started = perf_counter()
+        timings = defaultdict(float)
+        before = observe_process()
+        append_event(self.log, "task_start", index=index, shots=descriptor.rows, process=before)
+        mappings = active_fds = None
+        opened = perf_counter()
+        try:
+            with self.mapped.open_shard(index) as shard:
+                timings["source_verify_open"] += perf_counter() - opened
+                mappings = shard.mapped_arrays
+                active_fds = observe_process()["fd_count"]
+                entry = _evaluate_shard(
+                    self.stage / str(index), descriptor, shard, self.evaluator, self.modes, self.matching,
+                    self.batch_size, self.contract_sha256, timings, check_stop,
+                )
+            started_hash = perf_counter()
+            if model_state_sha256(self.evaluator.model) != self.state_digest:
+                raise ArtifactError("frozen evaluation changed model parameters or buffers")
+            timings["model_state_verification"] = perf_counter() - started_hash
+        except BaseException:
+            append_event(
+                self.log, "task_failed", index=index, process=observe_process(), dataset_active=self.mapped._active,
+            )
+            raise
+        after = observe_process()
+        receipt = file_integrity(self.stage / str(index) / "receipt.json")
+        resources = {
+            "index": index, "shots": entry["rows"], "started": started, "wall_seconds": perf_counter() - started,
+            "timings": dict(timings), "before": before, "after": after, "active_mappings": mappings,
+            "active_fd_count": active_fds, "dataset_active_after": self.mapped._active,
+            "source_bytes": descriptor.manifest_bytes + sum(array.bytes for array in descriptor.arrays),
+            "output_bytes": receipt["bytes"] + sum(file["bytes"] for file in entry["files"].values()),
+            "output_files": 1 + len(entry["files"]),
+        }
+        append_event(self.log, "task_done", **resources)
+        return EvaluationResult(
+            task, receipt, entry["rows"], resources["output_bytes"], resources["output_files"], os.getpid(), started,
+        )
+
+
+def _build_task_runner(config, mapped, model_payload, buffers, dem, modes, conditions, digest, stage, log):
+    from .evaluation import FrozenEvaluator, MatchingReference, model_state_sha256
+    from .models.gnn_rnn import QueryDecoder
+
+    model = QueryDecoder.from_checkpoint(model_payload)
+    evaluator = FrozenEvaluator(model, mapped.bundle, buffers)
+    state_digest = conditions[modes[0]]["model_state_sha256"]
+    if model_state_sha256(model) != state_digest:
+        raise ArtifactError("loaded evaluation model state differs from the checkpoint")
+    matching = None if dem is None else MatchingReference(dem, detector_count=mapped.plan.detector_count)
+    return _TaskRunner(mapped, evaluator, matching, modes, config.evaluation.batch_size, state_digest, digest, stage, log)
+
+
+_worker_runner: _TaskRunner | None = None
+
+
+def _initialize_evaluation_worker(config, semantic, modes, threads, stage, log_dir):
+    global _worker_runner
+    start = perf_counter()
+    # A worker's budget is its own affinity slice. The coordinator validates the full allocation.
+    local_runtime = replace(config.runtime, allocated_cpus=threads, intraop_threads=threads)
+    configure_cpu_runtime(local_runtime, config.data)
+    import torch
+
+    from .execution import _package_source_sha256
+
+    numerical = semantic["runtime"]
+    torch.use_deterministic_algorithms(numerical["deterministic_algorithms"], warn_only=numerical["deterministic_warn_only"])
+    torch.set_float32_matmul_precision(numerical["float32_matmul_precision"])
+    torch.backends.mkldnn.enabled = numerical["mkldnn_enabled"]
+    if _evaluation_runtime(config, torch.get_num_threads()) != numerical:
+        raise ArtifactError("evaluation worker numerical settings differ from the coordinator")
+    if _package_source_sha256() != semantic["environment"]["package_source_sha256"]:
+        raise ArtifactError("evaluation worker source differs from the coordinator")
+    metadata_start = perf_counter()
+    data_root, mapped = _dataset(config)
+    if _dataset_record(mapped) != semantic["data"]:
+        raise ArtifactError("evaluation worker dataset differs from the coordinator")
+    checkpoint_start = perf_counter()
+    model_payload, _, conditions, buffers, dem = _evaluation_inputs(
+        config, mapped, data_root, modes, expected_checkpoint=semantic["checkpoint"],
+    )
+    if conditions != semantic["conditions"]:
+        raise ArtifactError("evaluation worker checkpoint or query policy differs from the coordinator")
+    model_start = perf_counter()
+    _worker_runner = _build_task_runner(
+        config, mapped, model_payload, buffers, dem, modes, conditions, _semantic_digest(semantic),
+        stage, log_dir / f"worker-{os.getpid()}.jsonl",
+    )
+    return {
+        "model_loads": 1, "runtime": numerical, "native_env": {name: os.environ[name] for name in NATIVE_THREAD_VARIABLES},
+        "timings": {
+            "runtime": metadata_start - start, "dataset_metadata": checkpoint_start - metadata_start,
+            "checkpoint_and_queries": model_start - checkpoint_start, "model_initialization": perf_counter() - model_start,
+        },
     }
-    contract = {
-        "schema_version": 1, "semantic": semantic, "resolved_config": config.to_record(),
-        "overrides": list(overrides), "environment": environment,
-    }
+
+
+def _run_worker_task(task: EvaluationTask) -> EvaluationResult | EvaluationFailure:
+    # Keep both outcomes (including executor framing) below Linux PIPE_BUF.
+    # A worker killed during delivery cannot leave a partial result frame.
+    try:
+        return _worker_runner.run(task)
+    except BaseException as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        return EvaluationFailure(task, message.encode("utf-8")[:1024].decode("utf-8", errors="ignore"))
+
+
+def _run_evaluation(config, overrides, sweep_index, started, threads, slots, coordinator_cpu, check_stop):
+    configure_cpu_runtime(config.runtime, config.data)
+    from .execution import _package_source_sha256, _resume_environment
+
+    settings = config.evaluation
+    destination = _run_path(config, sweep_index)
     if not settings.resume:
         destination.mkdir()
         _sync_directory(destination.parent)
@@ -186,69 +385,246 @@ def evaluate_workflow(
         raise ArtifactError("evaluation resume requires the original run directory")
 
     with exclusive_lock(destination / ".evaluation.lock", "evaluation"):
+        contract_path = destination / "contract.json"
+        final_path = destination / "manifest.json"
         shards_dir = destination / "shards"
         if shards_dir.is_symlink():
             raise ArtifactError("evaluation shard root must be an owned directory")
-        contract_path = destination / "contract.json"
-        final_path = destination / "manifest.json"
         _clean_evaluation_json_temps(destination)
-        if contract_path.exists():
-            saved = read_json(contract_path)
-            if saved.get("schema_version") != 1 or saved.get("semantic") != semantic:
-                raise ArtifactError("evaluation resume contract differs from the requested data, model, policy, or environment")
-            contract = saved
-        else:
-            if final_path.exists() or set(p.name for p in destination.iterdir()) - {".evaluation.lock", "shards"} or (
-                shards_dir.exists() and any(shards_dir.iterdir())
-            ):
-                raise ArtifactError("evaluation run lacks a valid resumable contract; use a new run name for legacy results")
-            write_json(contract_path, contract)
+        saved = read_json(contract_path) if contract_path.exists() else None
+        if saved is not None and saved.get("schema_version") != EVALUATION_CONTRACT_SCHEMA:
+            raise ArtifactError("evaluation resume contract differs or has a legacy schema; use a new run name for legacy results")
+        if saved is None and (
+            final_path.exists() or {p.name for p in destination.iterdir()} - {".evaluation.lock", "shards"}
+            or (shards_dir.exists() and any(shards_dir.iterdir()))
+        ):
+            raise ArtifactError("evaluation run lacks a valid resumable contract; use a new run name for legacy results")
+
+        metadata_start = perf_counter()
+        data_root, mapped = _dataset(config)
+        checkpoint_start = perf_counter()
+        modes = ("G", "F", "S") if settings.id == "paired" else (settings.id,)
+        model_payload, checkpoint, conditions, buffers, dem = _evaluation_inputs(config, mapped, data_root, modes)
+        if slots:
+            model_payload = dem = None
+        environment = {**_environment_record(), "package_source_sha256": _package_source_sha256()}
+        numerical_environment = _resume_environment(environment)
+        numerical_environment["cpu"] = {key: environment["cpu"][key] for key in ("model", "platform")}
+        for package in ("scipy", "pymatching") if settings.matching else ("scipy",):
+            numerical_environment["packages"][package] = environment["packages"][package]
+        runtime = _evaluation_runtime(config, threads)
+        resolved = config.to_record()
+        semantic = {
+            "prediction_schema": PREDICTION_SCHEMA, "data": _dataset_record(mapped), "conditions": conditions,
+            "request": _evaluation_request(resolved), "checkpoint": checkpoint, "runtime": runtime,
+            "environment": numerical_environment,
+        }
+        if saved is not None and saved.get("semantic") != semantic:
+            raise ArtifactError("evaluation resume contract differs from the requested data, model, policy, or environment")
+        if saved is None:
+            saved = {
+                "schema_version": EVALUATION_CONTRACT_SCHEMA, "semantic": semantic, "resolved_config": resolved,
+                "overrides": list(overrides), "environment": environment,
+            }
+            write_json(contract_path, saved)
         shards_dir.mkdir(exist_ok=True)
         _sync_directory(destination)
-        final_exists = final_path.exists()
-        sealed = _read_manifest(final_path, mapped) if final_exists else None
+
+        staging_root = destination / ".evaluation-staging"
+        _clean_staging(staging_root)
+        sealed = _read_manifest(final_path, mapped) if final_path.exists() else None
         if sealed is not None and sealed.get("contract") != semantic:
             raise ArtifactError("completed evaluation manifest differs from the resumable contract")
         committed = _evaluation_inventory(shards_dir, len(mapped.shards))
+        if sealed is not None and len(committed) != len(mapped.shards):
+            raise ArtifactError("completed evaluation is missing committed shards")
+
         digest = _semantic_digest(semantic)
-        inventory = []
-        for descriptor in mapped.shards:
-            index = descriptor.index
-            target = shards_dir / str(index)
-            with mapped.open_shard(index) as shard:
-                if index in committed:
-                    entry = _verify_commit(target, descriptor, shard, conditions, digest)
-                    if sealed is not None and sealed["shards"][index] != entry:
-                        raise ArtifactError("completed evaluation inventory differs from its shard receipt")
-                elif final_exists:
-                    raise ArtifactError(f"completed evaluation is missing shard {index}")
-                else:
-                    entry = _evaluate_shard(
-                        target, descriptor, shard, evaluator, modes, matching, settings.batch_size, digest,
+        attempt = uuid4().hex
+        log_dir = destination / "attempts" / attempt
+        log_dir.mkdir(parents=True)
+        log = log_dir / "coordinator.jsonl"
+        limit = (settings.max_in_flight or 2 * settings.workers) if slots else 1
+        append_event(
+            log, "attempt_start", attempt=attempt, contract_sha256=digest, process=observe_process(),
+            resume=settings.resume, workers=settings.workers, worker_threads=threads, max_in_flight=limit,
+            worker_affinity=slots, coordinator_commit_cpu=coordinator_cpu, allocated_cpus=config.runtime.allocated_cpus,
+            committed=sorted(committed), source_checkpoint=str(config.checkpoint.path),
+            source_dataset=str(data_root), timings={
+                "setup": metadata_start - started, "dataset_metadata": checkpoint_start - metadata_start,
+                "checkpoint_queries_and_contract": perf_counter() - checkpoint_start,
+            },
+        )
+        status = "interrupted_or_failed"
+        try:
+            inventory = {}
+            verify_started = perf_counter()
+            for index in sorted(committed):
+                check_stop()
+                descriptor = mapped.shards[index]
+                with mapped.open_shard(index) as shard:
+                    entry = _verify_commit(shards_dir / str(index), descriptor, shard, conditions, digest)
+                if sealed is not None and sealed["shards"][index] != entry:
+                    raise ArtifactError("completed evaluation inventory differs from its shard receipt")
+                inventory[index] = entry
+            append_event(log, "verified_commits", count=len(inventory), wall_seconds=perf_counter() - verify_started)
+            if len(inventory) < len(mapped.shards):
+                with _task_staging(staging_root, attempt) as stage:
+                    inline_start = perf_counter()
+                    runner = None if slots else _build_task_runner(
+                        config, mapped, model_payload, buffers, dem, modes, conditions, digest, stage, log,
                     )
-            inventory.append(entry)
-        if model_state_sha256(model) != state_digest:
-            raise ArtifactError("frozen evaluation changed model parameters or buffers")
-        if not final_exists:
-            _sync_directory(shards_dir)
-            write_json(final_path, {
-                "schema_version": PREDICTION_SCHEMA, "status": "complete", "data": semantic["data"],
-                "conditions": conditions, "shards": inventory, "resolved_config": contract["resolved_config"],
-                "overrides": contract["overrides"], "environment": contract["environment"], "runtime": runtime,
-                "contract": semantic, "contract_sha256": digest,
-            })
+                    del model_payload
+                    if runner is not None:
+                        append_event(
+                            log, "inline_model_ready", model_loads=1, process=observe_process(),
+                            wall_seconds=perf_counter() - inline_start,
+                        )
+                    _evaluate_missing(
+                        config, mapped, modes, semantic, digest, inventory, stage, log_dir, shards_dir,
+                        slots, coordinator_cpu, threads, limit, runner, check_stop,
+                    )
+            check_stop()
+            if sealed is None:
+                if set(inventory) != set(range(len(mapped.shards))):
+                    raise ArtifactError("evaluation did not commit exact shard coverage")
+                publication = perf_counter()
+                _sync_directory(shards_dir)
+                write_json(final_path, {
+                    "schema_version": PREDICTION_SCHEMA, "status": "complete", "data": semantic["data"],
+                    "conditions": conditions, "shards": [inventory[index] for index in range(len(mapped.shards))],
+                    "resolved_config": saved["resolved_config"], "overrides": saved["overrides"],
+                    "environment": saved["environment"], "runtime": runtime,
+                    "contract": semantic, "contract_sha256": digest,
+                })
+                append_event(log, "manifest_published", wall_seconds=perf_counter() - publication)
+            status = "validated_complete" if sealed is not None else "complete"
+        finally:
+            append_event(log, "attempt_end", status=status, wall_seconds=perf_counter() - started, process=observe_process())
     return final_path
+
+
+def _evaluate_missing(
+    config, mapped, modes, semantic, digest, inventory, stage, log_dir, shards_dir,
+    slots, coordinator_cpu, threads, limit, runner, check_stop,
+):
+    log = log_dir / "coordinator.jsonl"
+    tasks = (
+        EvaluationTask(desc.index, stage.name, digest) for desc in mapped.shards if desc.index not in inventory
+    )
+
+    def submitted(task, pending):
+        append_event(log, "task_submitted", index=task.index, pending=pending)
+
+    def commit(task, result, submitted_at, pending):
+        check_stop()
+        begin = perf_counter()
+        if isinstance(result, EvaluationFailure) and result.task == task:
+            raise ArtifactError(f"evaluation task {task} failed: {result.error}")
+        if (not isinstance(result, EvaluationResult) or result.task != task
+                or task.index in inventory or type(result.receipt) is not dict):
+            raise ArtifactError(f"invalid receipt or duplicate commit for evaluation task {task}")
+        directory = stage / str(task.index)
+        descriptor = mapped.shards[task.index]
+        with cpu_affinity({coordinator_cpu}) if slots else nullcontext():
+            with mapped.open_shard(task.index, labels_only=True) as shard:
+                entry = _verify_commit(directory, descriptor, shard, semantic["conditions"], digest, result.receipt)
+            output_bytes = result.receipt["bytes"] + sum(file["bytes"] for file in entry["files"].values())
+            if (entry["rows"], 1 + len(entry["files"]), output_bytes) != (
+                result.rows, result.output_files, result.output_bytes,
+            ):
+                raise ArtifactError(f"worker receipt differs from staged evaluation shard {task.index}")
+            verified = perf_counter()
+            publish_directory(directory, shards_dir / str(task.index))
+            _sync_directory(stage)
+        inventory[task.index] = entry
+        append_event(
+            log, "task_committed", index=task.index, pending=pending - 1, worker_pid=result.worker_pid,
+            queue_seconds=result.started - submitted_at, verification_seconds=verified - begin,
+            publication_seconds=perf_counter() - verified,
+        )
+
+    if slots:
+        pool_start = perf_counter()
+        try:
+            run_pool(
+                tasks, slots=slots, threads=threads, limit=limit, lease=stage / "writers.lock", log_dir=log_dir,
+                initialize=_initialize_evaluation_worker, initializer_args=(config, semantic, modes, threads, stage, log_dir),
+                work=_run_worker_task, check_stop=check_stop, on_submit=submitted, on_result=commit,
+            )
+        finally:
+            append_event(log, "pool_closed", wall_seconds=perf_counter() - pool_start, process=observe_process())
+    else:
+        for task in tasks:
+            check_stop()
+            submitted_at = perf_counter()
+            submitted(task, 1)
+            commit(task, runner.run(task, check_stop=check_stop), submitted_at, 1)
+
+
+@contextmanager
+def _task_staging(root: Path, attempt: str):
+    root.mkdir(exist_ok=True)
+    stage = root / attempt
+    stage.mkdir()
+    (stage / "writers.lock").touch(exist_ok=False)
+    try:
+        yield stage
+    finally:
+        _retire_staging(stage)
+        root.rmdir()
+
+
+def _retire_staging(stage: Path) -> None:
+    lease = stage / "writers.lock"
+    if lease.is_symlink() or (lease.exists() and not lease.is_file()):
+        raise ArtifactError("invalid evaluation worker lease")
+    if not lease.exists():
+        # A coordinator can die before creating the lease or while retiring
+        # an already quiescent attempt. No worker opens the lease with O_CREAT.
+        shutil.rmtree(stage)
+        return
+    with lease.open("rb") as file:
+        try:
+            fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ArtifactError(f"evaluation attempt {stage.name} still has live writers; resume after they exit") from exc
+        shutil.rmtree(stage)
+
+
+def _clean_staging(root: Path) -> None:
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise ArtifactError("invalid evaluation staging root")
+    if root.is_dir():
+        for stage in root.iterdir():
+            if not re.fullmatch(r"[a-f0-9]{32}", stage.name) or stage.is_symlink() or not stage.is_dir():
+                raise ArtifactError("invalid evaluation staging attempt")
+            _retire_staging(stage)
+        root.rmdir()
 
 
 def _semantic_digest(record: dict) -> str:
     return sha256(canonical_json(record)).hexdigest()
 
 
-def _evaluation_request(resolved: dict) -> dict:
+def _evaluation_request(resolved: dict, *, schema: int = PREDICTION_SCHEMA) -> dict:
+    runtime = resolved["runtime"]
+    settings = resolved["evaluation"]
+    omitted = {"resume"}
+    if schema >= 3:
+        threads = settings.get("worker_threads")
+        if threads is None:
+            threads = runtime["intraop_threads"] if settings.get("workers", 1) == 1 else 1
+        runtime = {
+            "device": runtime["device"], "dtype": runtime["dtype"], "intraop_threads": threads,
+            "interop_threads": runtime["interop_threads"],
+        }
+        omitted.update(("workers", "worker_threads", "max_in_flight"))
     return {
-        **{key: resolved[key] for key in ("code", "noise", "window", "model", "geometry", "runtime")},
+        **{key: resolved[key] for key in ("code", "noise", "window", "model", "geometry")},
+        "runtime": runtime,
         "execution": {key: resolved["data"][key] for key in ("num_workers", "sampling_processes")},
-        "evaluation": {key: value for key, value in resolved["evaluation"].items() if key != "resume"},
+        "evaluation": {key: value for key, value in settings.items() if key not in omitted},
     }
 
 
@@ -259,11 +635,6 @@ def _clean_evaluation_json_temps(directory: Path) -> None:
 
 
 def _evaluation_inventory(root: Path, count: int) -> set[int]:
-    pending = root / ".pending"
-    if pending.is_symlink() or (pending.exists() and not pending.is_dir()):
-        raise ArtifactError("invalid temporary evaluation shard directory")
-    if pending.is_dir():
-        shutil.rmtree(pending)
     indices = set()
     for path in root.iterdir():
         if not path.is_dir() or path.is_symlink() or not re.fullmatch(r"0|[1-9][0-9]*", path.name):
@@ -272,73 +643,76 @@ def _evaluation_inventory(root: Path, count: int) -> set[int]:
         if index >= count:
             raise ArtifactError("out-of-range evaluation shard directory")
         indices.add(index)
-    if indices != set(range(len(indices))):
-        raise ArtifactError("evaluation shard inventory is missing an earlier committed index")
     return indices
 
 
-def _verify_commit(directory, descriptor, shard, conditions, digest) -> dict:
-    receipt = read_json(directory / "receipt.json")
+def _verify_commit(directory, descriptor, shard, conditions, digest, expected_receipt=None) -> dict:
+    if directory.is_symlink() or (directory / "receipt.json").is_symlink():
+        raise ArtifactError(f"invalid evaluation receipt location for shard {descriptor.index}")
+    receipt, integrity = read_json_artifact(directory / "receipt.json")
+    if expected_receipt is not None and integrity != expected_receipt:
+        raise ArtifactError(f"worker receipt differs from staged evaluation shard {descriptor.index}")
     if (
-        receipt.get("schema_version") != 1 or receipt.get("contract_sha256") != digest
+        type(receipt.get("schema_version")) is not int or receipt["schema_version"] != 1
+        or receipt.get("contract_sha256") != digest
         or receipt.get("source") != descriptor.source_record()
     ):
         raise ArtifactError(f"committed evaluation shard {descriptor.index} has incompatible source or run identity")
     entry = {key: value for key, value in receipt.items() if key not in ("schema_version", "contract_sha256")}
-    _verify_prediction_files(directory, entry, shard, conditions, committed=True)
+    _verify_prediction_files(directory, entry, shard, conditions)
     return entry
 
 
-def _verify_prediction_files(directory, entry, shard, conditions, *, committed: bool) -> None:
-    expected = set(entry.get("files", {}))
-    if committed:
-        expected.add("receipt.json")
-    if {path.name for path in directory.iterdir()} != expected:
+def _verify_prediction_files(directory, entry, shard, conditions) -> None:
+    paths = list(directory.iterdir())
+    expected = set(entry.get("files", {})) | {"receipt.json"}
+    if {path.name for path in paths} != expected or any(path.is_symlink() or not path.is_file() for path in paths):
         raise ArtifactError(f"missing or unexpected prediction payloads for shard {shard.index}")
     for _ in _read_prediction_shard(directory, entry, shard, conditions):
         pass
 
 
-def _evaluate_shard(target, descriptor, shard, evaluator, modes, matching, batch_size, digest) -> dict:
+def _evaluate_shard(stage, descriptor, shard, evaluator, modes, matching, batch_size, digest, timings, check_stop) -> dict:
     import numpy as np
 
     from .evaluation import compose_core_decisions
 
-    pending = target.parent / ".pending"
-    pending.mkdir()
-    try:
-        count = shard.rows
-        logits = {mode: np.empty((count, len(evaluator.views(mode))), dtype=np.float32) for mode in modes}
-        baselines = np.empty((count, 1), dtype=bool) if matching is not None else None
-        for start in range(0, count, batch_size):
-            rows = slice(start, min(count, start + batch_size))
-            shots = shard.read(rows).shots
-            for mode in modes:
-                logits[mode][rows] = evaluator.logits(mode, shots.detectors, shots.shot_ids)
-            if matching is not None:
-                baselines[rows] = matching.decisions(shots.detectors)
-        files = {"shot_ids.npy": _write_array(pending / "shot_ids.npy", shard.shot_ids)}
-        decisions = {mode: scores >= 0 for mode, scores in logits.items()}
+    stage.mkdir()
+    count = shard.rows
+    logits = {mode: np.empty((count, len(evaluator.views(mode))), dtype=np.float32) for mode in modes}
+    baselines = np.empty((count, 1), dtype=bool) if matching is not None else None
+    for start in range(0, count, batch_size):
+        check_stop()
+        rows = slice(start, min(count, start + batch_size))
+        begin = perf_counter()
+        shots = shard.read(rows).shots
+        timings["source_read_unpack"] += perf_counter() - begin
+        for mode in modes:
+            logits[mode][rows] = evaluator.logits(mode, shots.detectors, shots.shot_ids, timings=timings)
         if matching is not None:
-            decisions["MWPM"] = baselines
-        for mode, bits in decisions.items():
-            files[f"{mode}.decisions.npy"] = {
-                **_write_array(pending / f"{mode}.decisions.npy", np.packbits(bits, axis=1, bitorder="little")),
-                "valid_bits": bits.shape[1],
-            }
-            if mode in logits:
-                files[f"{mode}.logits.npy"] = _write_array(pending / f"{mode}.logits.npy", logits[mode])
-            if mode in ("F", "S"):
-                final = compose_core_decisions(bits).astype(np.uint8)[:, None]
-                files[f"{mode}.final.npy"] = {**_write_array(pending / f"{mode}.final.npy", final), "valid_bits": 1}
-        entry = {"index": descriptor.index, "rows": count, "files": files, "source": descriptor.source_record()}
-        _verify_prediction_files(pending, entry, shard, {mode: {"condition": mode} for mode in decisions}, committed=False)
-        write_json(pending / "receipt.json", {"schema_version": 1, "contract_sha256": digest, **entry})
-        publish_directory(pending, target)
-        return entry
-    finally:
-        if pending.is_dir():
-            shutil.rmtree(pending)
+            begin = perf_counter()
+            baselines[rows] = matching.decisions(shots.detectors)
+            timings["forward_MWPM"] += perf_counter() - begin
+    check_stop()
+    begin = perf_counter()
+    files = {"shot_ids.npy": _write_array(stage / "shot_ids.npy", shard.shot_ids)}
+    decisions = {mode: scores >= 0 for mode, scores in logits.items()}
+    if matching is not None:
+        decisions["MWPM"] = baselines
+    for mode, bits in decisions.items():
+        files[f"{mode}.decisions.npy"] = {
+            **_write_array(stage / f"{mode}.decisions.npy", np.packbits(bits, axis=1, bitorder="little")),
+            "valid_bits": bits.shape[1],
+        }
+        if mode in logits:
+            files[f"{mode}.logits.npy"] = _write_array(stage / f"{mode}.logits.npy", logits[mode])
+        if mode in ("F", "S"):
+            final = compose_core_decisions(bits).astype(np.uint8)[:, None]
+            files[f"{mode}.final.npy"] = {**_write_array(stage / f"{mode}.final.npy", final), "valid_bits": 1}
+    entry = {"index": descriptor.index, "rows": count, "files": files, "source": descriptor.source_record()}
+    write_json(stage / "receipt.json", {"schema_version": 1, "contract_sha256": digest, **entry})
+    timings["prediction_serialize_write"] += perf_counter() - begin
+    return entry
 
 
 def _read_manifest(path: Path, mapped, *, verify_queries: bool = True) -> dict:
@@ -351,7 +725,7 @@ def _validate_manifest(record: dict, mapped, *, verify_queries: bool = True) -> 
     from .windows import Buffers, build_observation_layout, select_window
 
     schema = record.get("schema_version")
-    if (type(schema) is not int or schema not in (1, PREDICTION_SCHEMA)
+    if (type(schema) is not int or schema not in (1, 2, PREDICTION_SCHEMA)
             or record.get("status") != "complete"):
         raise ArtifactError("incomplete or incompatible prediction manifest")
     if record.get("data") != _dataset_record(mapped):
@@ -361,18 +735,19 @@ def _validate_manifest(record: dict, mapped, *, verify_queries: bool = True) -> 
             raise ArtifactError("prediction manifest is missing shards or conditions")
         if schema == 1 and {"contract", "contract_sha256"} & record.keys():
             raise ArtifactError("incompatible prediction manifest mixes legacy and resumable schemas")
-        if schema == PREDICTION_SCHEMA:
+        if schema >= 2:
             semantic = record["contract"]
             if (
                 record["contract_sha256"] != _semantic_digest(semantic)
-                or semantic["prediction_schema"] != PREDICTION_SCHEMA
+                or semantic["prediction_schema"] != schema
                 or any(semantic[key] != record[key] for key in ("data", "conditions", "runtime"))
-                or semantic["request"] != _evaluation_request(record["resolved_config"])
+                or semantic["request"] != _evaluation_request(record["resolved_config"], schema=schema)
             ):
                 raise ArtifactError("prediction manifest has an incompatible semantic contract")
             for descriptor, entry in zip(mapped.shards, record["shards"], strict=True):
                 if (
-                    (descriptor.index, descriptor.rows) != (entry["index"], entry["rows"])
+                    type(entry["index"]) is not int or type(entry["rows"]) is not int
+                    or (descriptor.index, descriptor.rows) != (entry["index"], entry["rows"])
                     or entry["source"] != descriptor.source_record()
                 ):
                     raise ArtifactError("prediction manifest has incompatible source shard identity or coverage")
@@ -445,7 +820,10 @@ def _read_prediction_shard(directory, entry, shard, conditions):
 
     try:
         row_count = shard.rows
-        if (entry["index"], entry["rows"]) != (shard.index, row_count):
+        if (
+            type(entry["index"]) is not int or type(entry["rows"]) is not int
+            or (entry["index"], entry["rows"]) != (shard.index, row_count)
+        ):
             raise ArtifactError("missing, duplicated or reordered prediction shards")
         files = entry["files"]
         expected = {"shot_ids.npy"}

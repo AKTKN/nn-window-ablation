@@ -104,9 +104,9 @@ def test_evaluation_commit_failures_and_verified_idempotence(tmp_path, evaluatio
     evaluated = Counter()
     original_logits = FrozenEvaluator.logits
 
-    def predict(self, mode, detectors, ids):
+    def predict(self, mode, detectors, ids, **kwargs):
         evaluated[int(ids[0]) & 0xFFFFFFFF] += 1
-        return original_logits(self, mode, detectors, ids)
+        return original_logits(self, mode, detectors, ids, **kwargs)
 
     monkeypatch.setattr(FrozenEvaluator, "logits", predict)
     resumed = workflows.evaluate_workflow(evaluation_config("candidate", resume=True))
@@ -182,10 +182,18 @@ def test_resume_contract_is_content_based_and_rejects_policy_changes(tmp_path, e
     monkeypatch.setattr(FrozenEvaluator, "logits", lambda *_: pytest.fail("verified shard was re-inferred"))
     for change in (
         "evaluation.batch_size=2", "evaluation=G", "window.left_per_distance=0.5",
-        "runtime.allocated_cpus=7", "evaluation.matching=true",
+        "evaluation.matching=true",
     ):
         with pytest.raises(ArtifactError, match="contract differs"):
             workflows.evaluate_workflow(evaluation_config("original", change, resume=True))
+    with pytest.raises(ArtifactError, match="contract differs"):
+        workflows.evaluate_workflow(evaluation_config(
+            "original", "evaluation.workers=2", "evaluation.worker_threads=2", resume=True,
+        ))
+    assert workflows.evaluate_workflow(evaluation_config(
+        "original", "runtime.allocated_cpus=7", "evaluation.workers=2",
+        "evaluation.max_in_flight=1", resume=True,
+    )) == original
     with pytest.raises(ConfigError, match="threshold"):
         workflows.evaluate_workflow(evaluation_config("original", "evaluation.threshold=0.51", resume=True))
 
@@ -244,14 +252,56 @@ def test_old_terminal_checkpoint_and_completed_predictions_remain_readable(tmp_p
         workflows.evaluate_workflow(evaluation_config("legacy", resume=True))
 
 
-def test_repeated_interrupted_attempts_reuse_one_owned_staging_path(tmp_path, evaluation_config, monkeypatch):
+def test_schema_two_completed_manifest_is_readable_but_legacy_run_cannot_resume(evaluation_config):
+    config = evaluation_config("legacy")
+    path = workflows.evaluate_workflow(config)
+    record = read_json(path)
+    record["schema_version"] = record["contract"]["prediction_schema"] = 2
+    for option in ("workers", "worker_threads", "max_in_flight"):
+        record["resolved_config"]["evaluation"].pop(option)
+    record["contract"]["request"] = workflows._evaluation_request(record["resolved_config"], schema=2)
+    record["contract_sha256"] = workflows._semantic_digest(record["contract"])
+    write_json(path, record)
+    mapped = workflows._dataset(config)[1]
+    assert workflows._read_manifest(path, mapped) == record
+    contract = path.with_name("contract.json")
+    write_json(contract, {"schema_version": 1, "semantic": record["contract"]})
+    path.unlink()
+    with pytest.raises(ArtifactError, match="legacy schema"):
+        workflows.evaluate_workflow(evaluation_config("legacy", resume=True))
+
+
+@pytest.mark.parametrize(("options", "message"), [
+    (("evaluation.workers=2", "runtime.intraop_threads=4"), "parallel evaluation requires"),
+    (("evaluation.workers=2", "evaluation.worker_threads=5"), "require 10 CPUs"),
+    (("evaluation.max_in_flight=2",), "inline evaluation requires"),
+    (("evaluation.workers=2", "data.num_workers=1"), "single process"),
+    (("evaluation.workers=2", "data.sampling_processes=2"), "single process"),
+    (("evaluation.workers=0",), "must be positive"),
+    (("evaluation.worker_threads=0",), "must be positive"),
+    (("evaluation.max_in_flight=true",), "must be an integer"),
+    (("evaluation.workers=2",), "inherited OPENBLAS_NUM_THREADS"),
+])
+def test_parallel_budget_is_checked_before_opening_artifacts(tmp_path, compose_settings, monkeypatch, options, message):
+    if "inherited" in message:
+        monkeypatch.setenv("OPENBLAS_NUM_THREADS", "16")
+    with pytest.raises(ConfigError, match=message):
+        config = resolve_config(compose_settings(
+            "runtime=test_cpu", "data.split=test", "data.id=missing", "checkpoint.path=missing.pt", *options,
+        ), invocation_dir=tmp_path)
+        workflows.evaluate_workflow(config)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_repeated_interrupted_attempts_use_unique_owned_staging_paths(tmp_path, evaluation_config, monkeypatch):
     original = workflows.publish_directory
     root = tmp_path / "runs/candidate"
-    attempt = 0
+    stages = set()
 
     def interrupt(stage, target):
         if target.name == "1":
-            assert stage.name == ".pending"
+            assert stage.name == "1" and stage not in stages
+            stages.add(stage)
             raise OSError("repeat interruption")
         return original(stage, target)
 
@@ -262,5 +312,6 @@ def test_repeated_interrupted_attempts_reuse_one_owned_staging_path(tmp_path, ev
                 workflows.evaluate_workflow(evaluation_config("candidate", resume=attempt > 0))
             assert [p.name for p in (root / "shards").iterdir()] == ["0"]
             assert len(list(root.glob("**/receipt.json"))) == 1
+            assert not (root / ".evaluation-staging").exists()
     path = workflows.evaluate_workflow(evaluation_config("candidate", resume=True))
     assert len(read_json(path)["shards"]) == 3
