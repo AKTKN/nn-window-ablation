@@ -1,15 +1,19 @@
 """Dataset and training workflows over resolved configuration and explicit paths."""
 
+from contextlib import ExitStack, contextmanager
 from hashlib import sha256
 from pathlib import Path
 import re
 import resource
 from time import perf_counter, process_time
+from uuid import uuid4
 
 from .artifacts import ArtifactError, exclusive_lock, file_integrity, verify_file, write_json
 from .config import ConfigError, ResolvedConfig, require_execution_config, validate_run_name
 from .continuation import CONTINUATION_ARMS, TRAINING_REGIMES
+from .evaluation_pool import append_event, observe_process
 from .runtime import configure_cpu_runtime
+from .training_telemetry import capture_spans, span
 from .workflows import _environment_record, reserve_run_directory
 
 
@@ -17,8 +21,9 @@ def check_execution(command: str, config: ResolvedConfig) -> None:
     """Check workflow configuration before reserving any artifact directories."""
     require_execution_config(config, command)
     data = config.data
-    if (config.runtime.processes, data.num_workers, data.sampling_processes) != (1, 0, 1):
-        raise ConfigError("P4 execution requires one application process, zero loader workers, and inline sampling")
+    distributed = command == "train" and config.training.execution == "ddp"
+    if (data.num_workers, data.sampling_processes) != (0, 1) or not distributed and config.runtime.processes != 1:
+        raise ConfigError("execution requires zero loader workers and inline sampling; only DDP train accepts multiple processes")
     if data.split not in ("train", "validation", "test"):
         raise ConfigError("data.split must be train, validation, or test")
     if (data.storage, data.bitorder, data.label_schema) != ("packed_npy", "little", "clean_cut_core_parity_v1"):
@@ -38,8 +43,14 @@ def check_execution(command: str, config: ResolvedConfig) -> None:
         raise ConfigError("data.train_source must be generated_chunks or stored_shards")
     if training.optimizer not in ("sgd", "adam") or training.scheduler not in ("none", "step"):
         raise ConfigError("choose training.optimizer=sgd or adam and training.scheduler=none or step")
-    if training.microbatch_size is not None and training.microbatch_size > training.batch_size:
-        raise ConfigError("microbatch size exceeds the effective batch size")
+    world_size = config.runtime.processes if distributed else 1
+    if distributed:
+        if data.train_source != "stored_shards" or config.runtime.interop_threads != 1:
+            raise ConfigError("DDP requires stored_shards with one inter-op thread per rank")
+        if training.batch_size % world_size:
+            raise ConfigError("global training.batch_size must be divisible by the DDP world size")
+    if training.microbatch_size is not None and training.microbatch_size > training.batch_size // world_size:
+        raise ConfigError("microbatch size exceeds the effective batch size on one rank")
     if config.checkpoint.resume_from is None and not training.reset_optimizer_at_start:
         raise ConfigError("a new training phase requires a fresh optimizer")
     if (
@@ -167,7 +178,10 @@ def _continuation_controls(trainer, objective, parent: dict, initial_model: str,
         "loss_normalization": "one_plus_core_loss_weight", "checkpoint_policy": "fixed_updates",
         "sampled_cores_per_trajectory": 1, "core_sampling": "uniform", "optimizer_reset": True,
         "deployment_buffers": [objective.fixed_buffers.left, objective.fixed_buffers.right],
-        "execution": [config.runtime.intraop_threads, config.runtime.interop_threads, config.runtime.allocated_cpus],
+        "execution": [
+            config.runtime.intraop_threads, config.runtime.interop_threads, config.runtime.allocated_cpus,
+            *([config.runtime.processes] if config.training.execution == "ddp" else []),
+        ],
         "validation": None if validation is None else {
             "schedule": "terminal_only", "phase_update": trainer.budget.max_steps,
             "dataset_id": validation.plan.dataset_id, "manifest_sha256": validation.manifest_sha256,
@@ -200,8 +214,12 @@ def _terminal_validation(trainer, objective, mapped) -> dict:
 
 
 def _resume_contract(record: dict) -> dict:
+    training = record["training"]
     return {
         **record, "checkpoint": {**record["checkpoint"], "resume_from": None, "init_from": None},
+        "training": training if training.get("execution") == "ddp" else {
+            key: value for key, value in training.items() if key not in ("execution", "ddp_timeout_seconds")
+        },
         "evaluation": {
             key: value for key, value in record["evaluation"].items()
             if key not in ("workers", "worker_threads", "max_in_flight")
@@ -236,7 +254,15 @@ def train_workflow(
     stop_after: int | None = None,
 ) -> Path:
     """Train to the fixed budget, with an optional phase-local pause for bounded checks."""
+    started = perf_counter()
     check_execution("train", config)
+    _training_stop(config, stop_after)
+    if config.training.execution == "ddp":
+        from .ddp_launch import launch_training
+
+        directory, _ = _training_directory(config, sweep_index)
+        launch_training(config, overrides=overrides, sweep_index=sweep_index, stop_after=stop_after)
+        return directory / "checkpoint.pt"
     configure_cpu_runtime(config.runtime, config.data)
     import torch
 
@@ -244,32 +270,103 @@ def train_workflow(
     warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
     torch.use_deterministic_algorithms(True)
     try:
-        return _run_training(config, overrides=overrides, sweep_index=sweep_index, stop_after=stop_after)
+        return _run_training(config, overrides=overrides, sweep_index=sweep_index, stop_after=stop_after, started=started)
     finally:
         torch.use_deterministic_algorithms(enabled, warn_only=warn_only)
 
 
 def _run_training(
     config: ResolvedConfig, *, overrides: tuple[str, ...], sweep_index: int | None, stop_after: int | None,
+    started: float, group=None, startup=None,
 ) -> Path:
+    start_source = perf_counter()
+    if startup is None:
+        startup = {"runtime": start_source - started}
     with _training_stream(config) as stream:
-        return _train_stream(config, stream, overrides=overrides, sweep_index=sweep_index, stop_after=stop_after)
+        startup["dataset_metadata"] = perf_counter() - start_source
+        return _train_stream(
+            config, stream, overrides=overrides, sweep_index=sweep_index, stop_after=stop_after,
+            startup=startup, started=started, group=group,
+        )
 
 
-def _train_stream(config, stream, *, overrides, sweep_index, stop_after) -> Path:
+@contextmanager
+def _training_log(directory, started, startup, group):
+    owner = group is None or group.owner
+    rank = 0 if group is None else group.rank
+    attempt = None
+    if owner:
+        attempt = directory / "train-attempts" / uuid4().hex
+        attempt.mkdir(parents=True)
+    if group is not None:
+        attempt = group.share(attempt)
+    log = attempt / f"rank-{rank}.jsonl"
+    append_event(
+        log, "training_start", rank=rank, world_size=1 if group is None else group.world_size, timings=startup,
+        process=observe_process(), launcher_pid=None if group is None else group.launcher_pid,
+        spawn_seconds=None if group is None else started - group.launched,
+    )
+    try:
+        yield log
+    finally:
+        append_event(log, "training_end", rank=rank, wall_seconds=perf_counter() - started, process=observe_process())
+
+
+def _record_checkpoint(log, checkpoint, trainer, run, audit, group=None):
+    started = perf_counter()
+    with capture_spans() as timings:
+        if group is not None:
+            with span("checkpoint_gather"):
+                trainer.gather_checkpoint()
+        owner = group is None or group.owner
+        if owner:
+            _save_training_checkpoint(checkpoint, trainer, run, audit)
+        if group is not None:
+            with span("checkpoint_barrier"):
+                group.barrier()
+    if owner:
+        append_event(
+            log, "checkpoint", phase_updates=trainer.phase_updates, wall_seconds=perf_counter() - started,
+            bytes=checkpoint.stat().st_size, timings=timings, process=observe_process(),
+        )
+    else:
+        append_event(log, "checkpoint_peer", phase_updates=trainer.phase_updates, timings=timings, process=observe_process())
+
+
+def _training_stop(config, stop_after):
+    maximum = config.training.max_steps
+    stop = maximum if stop_after is None else stop_after
+    if type(stop) is not int or not 0 <= stop <= maximum:
+        raise ConfigError("pause must be within the declared phase update budget")
+    return stop
+
+
+def _training_directory(config, sweep_index):
+    root = config.paths.run_root / config.run_name
+    resume = config.checkpoint.resume_from
+    if resume is not None:
+        directory = resume.parent
+        if resume.name != "checkpoint.pt" or not directory.is_relative_to(root):
+            raise ArtifactError("resume must address checkpoint.pt in the selected original run")
+    else:
+        directory = root if sweep_index is None else root / "hydra_sweep" / str(sweep_index)
+    return directory, directory.relative_to(config.paths.run_root).as_posix()
+
+
+def _train_stream(config, stream, *, overrides, sweep_index, stop_after, startup, started, group=None) -> Path:
     import torch
 
     from .checkpoints import load_checkpoint
     from .continuation import checked_audit, model_tensors_sha256, record_update, start_audit
-    from .training import MemoryObjective, Trainer, UpdateBudget, fresh_decoder
+    from .training import MemoryObjective, Trainer, UpdateBudget, distributed_state, fresh_decoder
     from .windows import Buffers, buffer_lengths
 
     settings = config.training
-    stop = settings.max_steps if stop_after is None else stop_after
-    if type(stop) is not int or not 0 <= stop <= settings.max_steps:
-        raise ConfigError("pause must be within the declared phase update budget")
-    budget = UpdateBudget(settings.max_steps, settings.batch_size, settings.microbatch_size or settings.batch_size)
-    validation = _validation_dataset(config, stream.plan)
+    stop = _training_stop(config, stop_after)
+    owner = group is None or group.owner
+    world_size = 1 if group is None else group.world_size
+    budget = UpdateBudget(settings.max_steps, settings.batch_size, settings.microbatch_size or settings.batch_size // world_size)
+    validation = _validation_dataset(config, stream.plan) if owner else None
     model = fresh_decoder(stream.plan)
     optimizer_type = torch.optim.Adam if settings.optimizer == "adam" else torch.optim.SGD
     optimizer = optimizer_type(model.parameters(), lr=settings.learning_rate, foreach=False)
@@ -278,85 +375,127 @@ def _train_stream(config, stream, *, overrides, sweep_index, stop_after) -> Path
         if settings.scheduler == "step" else None
     )
     choices = buffer_lengths(config.geometry.distance) if settings.dynamic_buffers.enabled else None
-    trainer = Trainer(model, optimizer, scheduler, stream, budget, architecture=model.architecture(), dynamic_choices=choices)
+    trainer_type, topology = Trainer, {}
+    if group is not None:
+        from .distributed_training import DistributedTrainer
+
+        trainer_type, topology = DistributedTrainer, {"group": group}
+    trainer = trainer_type(
+        model, optimizer, scheduler, stream, budget, architecture=model.architecture(), dynamic_choices=choices, **topology,
+    )
     objective = MemoryObjective(
         stream.bundle, core_context=settings.core_context,
         fixed_buffers=Buffers(config.geometry.left_buffer, config.geometry.right_buffer), core_weight=settings.core_loss_weight,
     )
     declared = config.to_record()
-    environment = {**_environment_record(), "package_source_sha256": _package_source_sha256()}
-    root = config.paths.run_root / config.run_name
+    source_sha = _package_source_sha256()
+    environment = {**_environment_record(), "package_source_sha256": source_sha} if owner else None
     resume = config.checkpoint.resume_from
-    if resume is not None:
-        directory = resume.parent
-        relative = directory.relative_to(config.paths.run_root) if directory.is_relative_to(config.paths.run_root) else None
-        if resume.name != "checkpoint.pt" or not directory.is_relative_to(root) or relative is None:
-            raise ArtifactError("resume must address checkpoint.pt in the selected original run")
-    else:
-        parent = config.checkpoint.init_from
-        parent_record = None
-        if parent is not None:
-            parent_record = {"path": str(parent), **file_integrity(parent)}
-            parent_state = load_checkpoint(parent)
-            verify_file(parent, {key: parent_record[key] for key in ("bytes", "sha256")})
-            trainer.fork_from(parent_state)
-        if sweep_index is None:
-            directory = reserve_run_directory(config)
-        else:
-            directory = root / "hydra_sweep" / str(sweep_index)
-            directory.mkdir(parents=True)
-        relative = directory.relative_to(config.paths.run_root)
+    parent = config.checkpoint.init_from
+    directory, relative = _training_directory(config, sweep_index)
     checkpoint = directory / "checkpoint.pt"
-    audit = None
+    audit = parent_record = run = None
+    # For a fresh continuation keep invalid parent artifacts from reserving its output.
+    if parent is not None:
+        receipt = file_integrity(parent) if owner else None
+        if group is not None:
+            receipt = group.share(receipt)
+        parent_state = load_checkpoint(parent)
+        verify_file(parent, receipt)
+        trainer.fork_from(parent_state)
+        del parent_state
+        parent_record = {"path": str(parent), **receipt}
 
-    with exclusive_lock(directory / ".training.lock", "training"):
-        for entry in directory.iterdir():
-            if re.fullmatch(r"\.(?:checkpoint\.pt|run\.json)\.[a-z0-9_]{8}", entry.name) and entry.is_file():
-                entry.unlink()
-        if resume is not None:
-            state = load_checkpoint(resume)
-            run = state.get("run", {})
-            if run.get("replay_environment") != _resume_environment(environment):
-                raise ArtifactError(
-                    "checkpoint resume environment or source differs; use the original checkout and environment for exact replay"
-                )
-            if (
-                run.get("directory") != relative.as_posix()
-                or run.get("resume_contract") != _resume_contract(declared)
-            ):
-                raise ArtifactError("checkpoint belongs to another run, resolved configuration, or environment")
-            trainer.restore(state)
-            if trainer.parent_updates:
-                audit = checked_audit(state.get("continuation_audit"), updates=trainer.phase_updates)
-                controls = _continuation_controls(
-                    trainer, objective, run["parent"], audit["controls"]["initial_model_sha256"], validation, config,
-                )
-                if audit["controls"] != controls:
-                    raise ArtifactError("checkpoint continuation controls differ from this run")
-            if stop < trainer.phase_updates:
-                raise ConfigError("pause cannot precede the restored phase update")
-        else:
-            run = {
-                "directory": relative.as_posix(), "resolved_config": declared,
-                "resume_contract": _resume_contract(declared), "overrides": list(overrides),
-                "environment": environment, "replay_environment": _resume_environment(environment),
-                "runtime": {
-                    "torch_intraop": torch.get_num_threads(), "torch_interop": torch.get_num_interop_threads(),
-                    "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
-                },
-                "parent": parent_record,
-            }
-            if parent_record is not None:
-                initial = model_tensors_sha256(model.state_dict())
-                audit = start_audit(_continuation_controls(trainer, objective, parent_record, initial, validation, config))
-            _save_training_checkpoint(checkpoint, trainer, run, audit)
-        write_json(directory / "run.json", {
-            "schema_version": 1, "status": "running", "counters": trainer.counters, "run": run,
-        })
+    startup["model_optimizer_and_setup"] = perf_counter() - started - sum(startup.values())
+    with ExitStack() as stack:
+        if owner:
+            if resume is None:
+                if sweep_index is None:
+                    reserve_run_directory(config)
+                else:
+                    directory.mkdir(parents=True)
+            stack.enter_context(exclusive_lock(directory / ".training.lock", "training"))
+            for entry in directory.iterdir():
+                if re.fullmatch(r"\.(?:checkpoint\.pt|run\.json)\.[a-z0-9_]{8}", entry.name) and entry.is_file():
+                    entry.unlink()
+        log = stack.enter_context(_training_log(directory, started, startup, group))
+        with capture_spans() as preparation:
+            if resume is not None:
+                with span("checkpoint_restore"):
+                    receipt = None
+                    if group is not None:
+                        receipt = group.share(file_integrity(resume) if owner else None)
+                    state = load_checkpoint(resume)
+                    if receipt is not None:
+                        verify_file(resume, receipt)
+                    ddp_state = distributed_state(state)
+                    if (ddp_state is None) != (group is None) or (
+                        ddp_state is not None and ddp_state["world_size"] != world_size
+                    ):
+                        raise ArtifactError("checkpoint requires the original training execution mode and DDP world size")
+                    run = state.get("run", {})
+                    if owner:
+                        if run.get("replay_environment") != _resume_environment(environment):
+                            raise ArtifactError(
+                                "checkpoint resume environment or source differs; use the original checkout and environment for exact replay"
+                            )
+                        if (
+                            run.get("directory") != relative
+                            or run.get("resume_contract") != _resume_contract(declared)
+                        ):
+                            raise ArtifactError("checkpoint belongs to another run, resolved configuration, or environment")
+                    trainer.restore(state)
+                    if owner and trainer.parent_updates:
+                        audit = checked_audit(state.get("continuation_audit"), updates=trainer.phase_updates)
+                        controls = _continuation_controls(
+                            trainer, objective, run["parent"], audit["controls"]["initial_model_sha256"], validation, config,
+                        )
+                        if audit["controls"] != controls:
+                            raise ArtifactError("checkpoint continuation controls differ from this run")
+                    del state
+                    if stop < trainer.phase_updates:
+                        raise ConfigError("pause cannot precede the restored phase update")
+            elif owner:
+                run = {
+                    "directory": relative, "resolved_config": declared,
+                    "resume_contract": _resume_contract(declared), "overrides": list(overrides),
+                    "environment": environment, "replay_environment": _resume_environment(environment),
+                    "runtime": {
+                        "torch_intraop": torch.get_num_threads(), "torch_interop": torch.get_num_interop_threads(),
+                        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+                        **({"backend": "gloo", "world_size": world_size} if group is not None else {}),
+                    },
+                    "parent": parent_record,
+                }
+                if parent_record is not None:
+                    initial = model_tensors_sha256(model.state_dict())
+                    audit = start_audit(_continuation_controls(trainer, objective, parent_record, initial, validation, config))
+            if group is not None:
+                with span("ddp_initialization"):
+                    identity = group.share({
+                        "source": trainer.contract()["source"], "source_sha256": source_sha, "topology": trainer.topology(),
+                        "model_sha256": model_tensors_sha256(model.state_dict()),
+                    } if owner else None)
+                    if identity["source_sha256"] != source_sha or identity["topology"] != trainer.topology():
+                        raise ArtifactError("DDP ranks have different package source or numerical settings")
+                    trainer.verify_bootstrap(identity["source"], identity["model_sha256"])
+                    trainer.attach()
+        append_event(log, "training_ready", phase_updates=trainer.phase_updates, timings=preparation, process=observe_process())
+        if resume is None:
+            _record_checkpoint(log, checkpoint, trainer, run, audit, group)
+        if owner:
+            write_json(directory / "run.json", {
+                "schema_version": 1, "status": "running", "counters": trainer.counters, "run": run,
+            })
         cadence = config.checkpoint.save_every_updates
         while trainer.phase_updates < stop:
             wall, cpu = perf_counter(), process_time()
-            trace = trainer.step(objective)
+            with capture_spans() as timings:
+                trace = trainer.step(objective)
+            append_event(
+                log, "update", update=trace.update, timings=timings, wall_seconds=perf_counter() - wall,
+                cpu_seconds=process_time() - cpu, process=observe_process(),
+            )
             if audit is not None:
                 record_update(
                     audit, trace, detector_tokens=objective.detector_tokens(trace.cores, trace.buffers),
@@ -365,16 +504,29 @@ def _train_stream(config, stream, *, overrides, sweep_index, stop_after) -> Path
                     allocated_cpus=config.runtime.allocated_cpus,
                 )
             if trace.update == stop or (cadence is not None and trace.update % cadence == 0):
-                _save_training_checkpoint(checkpoint, trainer, run, audit)
+                _record_checkpoint(log, checkpoint, trainer, run, audit, group)
         stream.close()
-        if validation is not None and trainer.complete and audit["validation"] is None:
-            audit["validation"] = _terminal_validation(trainer, objective, validation)
-            _save_training_checkpoint(checkpoint, trainer, run, audit)
-        write_json(directory / "run.json", {
-            "schema_version": 1, "status": "complete" if trainer.complete else "paused",
-            "counters": trainer.counters, "checkpoint": file_integrity(checkpoint), "run": run,
-            **({"continuation_audit": audit} if audit is not None else {}),
-        })
+        if group is not None:
+            shutdown_started = perf_counter()
+            trainer.detach()
+            group.barrier()
+            group.close()
+            append_event(log, "group_closed", wall_seconds=perf_counter() - shutdown_started)
+            if owner:
+                shutdown_started = perf_counter()
+                group.await_peer_exits()
+                append_event(log, "peer_exits_verified", wall_seconds=perf_counter() - shutdown_started)
+        if owner:
+            if validation is not None and trainer.complete and audit["validation"] is None:
+                validation_started = perf_counter()
+                audit["validation"] = _terminal_validation(trainer, objective, validation)
+                append_event(log, "terminal_validation", wall_seconds=perf_counter() - validation_started)
+                _record_checkpoint(log, checkpoint, trainer, run, audit)
+            write_json(directory / "run.json", {
+                "schema_version": 1, "status": "complete" if trainer.complete else "paused",
+                "counters": trainer.counters, "checkpoint": file_integrity(checkpoint), "run": run,
+                **({"continuation_audit": audit} if audit is not None else {}),
+            })
     return checkpoint
 
 

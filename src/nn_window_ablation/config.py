@@ -140,6 +140,8 @@ class TrainingConfig:
     checkpoint_policy: str
     validation_data_id: str | None
     dynamic_buffers: DynamicBuffersConfig
+    execution: str = "single"
+    ddp_timeout_seconds: int = 120
 
 
 @dataclass
@@ -264,7 +266,7 @@ def resolve_config(config: DictConfig, *, invocation_dir: Path) -> ResolvedConfi
             "code": ("distance", "rounds_per_distance"),
             "runtime": ("processes", "intraop_threads", "interop_threads", "allocated_cpus"),
             "data": ("replicate", "num_workers", "sampling_processes", "shots", "shard_shots", "training_chunk_shots"),
-            "training": ("max_steps", "batch_size", "microbatch_size", "scheduler_step_size"),
+            "training": ("max_steps", "batch_size", "microbatch_size", "scheduler_step_size", "ddp_timeout_seconds"),
             "evaluation": ("batch_size", "workers", "worker_threads", "max_in_flight"),
             "analysis": ("bootstrap_replicates", "bootstrap_seed", "sparse_rule", "ratio_min_denominator_failures"),
             "checkpoint": ("save_every_updates",),
@@ -350,6 +352,8 @@ def _validate_settings(config: ResolvedConfig) -> None:
         raise ConfigError("checkpoint.init_from and checkpoint.resume_from are mutually exclusive")
     if config.data.replicate < 0:
         raise ConfigError("data.replicate must be nonnegative")
+    if config.training.execution not in ("single", "ddp") or config.training.ddp_timeout_seconds < 1:
+        raise ConfigError("training requires execution=single or ddp and positive ddp_timeout_seconds")
     _validate_budgets(config)
     validate_cpu_budget(config.runtime, config.data)
 

@@ -26,7 +26,10 @@ from .config import (
     validate_run_name,
 )
 from .evaluation_pool import append_event, cpu_affinity, observe_process, run_pool, stop_on_signal
-from .runtime import NATIVE_THREAD_VARIABLES, configure_cpu_runtime, native_thread_limits, runtime_observation
+from .runtime import (
+    NATIVE_THREAD_VARIABLES, configure_cpu_runtime, native_thread_limits, reject_excessive_native_threads,
+    runtime_observation,
+)
 from .workflows import _environment_record
 
 if TYPE_CHECKING:
@@ -147,10 +150,7 @@ def evaluate_workflow(
             return _run_evaluation(config, overrides, sweep_index, started, threads, (), None, check_stop)
     if not sys.platform.startswith("linux") or affinity is None:
         raise ConfigError("parallel evaluation requires Linux process affinity and parent-death signals")
-    for name in NATIVE_THREAD_VARIABLES:
-        inherited = os.environ.get(name)
-        if inherited is not None and (not inherited.isascii() or not inherited.isdecimal() or not 1 <= int(inherited) <= threads):
-            raise ConfigError(f"inherited {name}={inherited!r} exceeds or conflicts with evaluation worker threads={threads}")
+    reject_excessive_native_threads(threads, "evaluation worker")
     allocation = config.runtime.allocated_cpus
     if allocation > len(affinity):
         raise ConfigError("evaluation allocation exceeds process CPU affinity")

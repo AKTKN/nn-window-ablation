@@ -1,9 +1,10 @@
 """Fixed-update training with independent RNG streams and replayable state."""
 
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
+from hashlib import sha256
 import random
 from typing import Protocol
 
@@ -12,17 +13,68 @@ from numpy.typing import NDArray
 import torch
 from torch import Tensor, nn
 
-from .artifacts import ArtifactError
+from .artifacts import ArtifactError, canonical_json
+from .continuation import TRACE_PREFIX_UPDATES, is_digest
 from .data import SamplingPlan, StreamNamespace, TrajectoryID
 from .features import FeatureBatch, batch_features, build_feature_geometry, build_features
 from .models.gnn_rnn import QueryDecoder, prepare_model_batch
 from .models.objective import query_loss, sample_core_indices
 from .simulation import CircuitBundle, ShotBatch
 from .streams import ChunkCursor, TrajectoryStream
+from .training_telemetry import span
 from .windows import Buffers, WindowView, build_observation_layout, crop_observations, select_window
 
 
 Loss = Callable[[nn.Module, ShotBatch, NDArray[np.int64], Buffers | None], Tensor]
+EMPTY_TRAINING_INPUT_SHA256 = sha256(b"nnwa-training-inputs-v1").hexdigest()
+DISTRIBUTED_STATE_SCHEMA = 1
+
+
+def distributed_state(payload: dict) -> dict | None:
+    """Validate optional distributed metadata without requiring a process group."""
+    if "distributed_state" not in payload:
+        return None
+    state = payload["distributed_state"]
+    try:
+        values = [state[name] for name in ("world_size", "local_batch", "local_microbatch", "torch_intraop")]
+        world, batch, microbatch, _ = values
+        budget = payload["contract"]["budget"]
+        rng = state["rank_rng"]
+        if (
+            type(state["schema_version"]) is not int or state["schema_version"] != DISTRIBUTED_STATE_SCHEMA
+            or type(state["torch_interop"]) is not int
+            or (state["backend"], state["partition"], state["torch_interop"]) != ("gloo", "equal_contiguous_v1", 1)
+            or any(type(value) is not int or value < 1 for value in values)
+            or world * batch != budget["batch_size"] or microbatch != budget["microbatch_size"] or microbatch > batch
+            or not isinstance(rng, list) or len(rng) != world
+            or any(not isinstance(item["torch_cpu"], Tensor) or not isinstance(item["python"], tuple) for item in rng)
+            or not torch.equal(payload["random_states"]["torch_cpu"], rng[0]["torch_cpu"])
+            or payload["random_states"]["python"] != rng[0]["python"]
+        ):
+            raise ArtifactError("invalid distributed training checkpoint contract")
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise ArtifactError("invalid distributed training checkpoint contract") from exc
+    return state
+
+
+def _next_training_input(prior: str, update: dict) -> str:
+    fields = [update[key] for key in ("update", "trajectories", "cores", "buffers")]
+    return sha256(bytes.fromhex(prior) + canonical_json(fields)).hexdigest()
+
+
+def _checked_training_inputs(audit: dict, updates: int, batch_size: int) -> dict:
+    prefix = audit["trace_prefix"]
+    if (audit["schema_version"] != 1 or not is_digest(audit["sha256"])
+            or len(prefix) != min(updates, TRACE_PREFIX_UPDATES)):
+        raise ArtifactError("invalid training input audit")
+    digest = EMPTY_TRAINING_INPUT_SHA256
+    for index, item in enumerate(prefix, 1):
+        if item["update"] != index or len(item["trajectories"]) != batch_size or len(item["cores"]) != batch_size:
+            raise ArtifactError("training input audit has an invalid global batch")
+        digest = _next_training_input(digest, item)
+    if updates <= TRACE_PREFIX_UPDATES and digest != audit["sha256"]:
+        raise ArtifactError("training input digest differs from the recorded draws")
+    return audit
 
 
 class IntegerDraw(Protocol):
@@ -82,23 +134,26 @@ class TrainingRandomness:
         return {
             "core_query": deepcopy(self.core.bit_generator.state),
             "dynamic_buffer": deepcopy(self.buffer.bit_generator.state),
-            "torch_cpu": self.torch_state.clone(),
-            "python": self.python_state,
+            **self.model_state(),
         }
+
+    def model_state(self) -> dict:
+        return {"torch_cpu": self.torch_state.clone(), "python": self.python_state}
+
+    def restore_model(self, state: dict) -> None:
+        torch.Generator().set_state(state["torch_cpu"])
+        random.Random().setstate(state["python"])
+        self.torch_state = state["torch_cpu"].clone()
+        self.python_state = state["python"]
 
     def restore(self, state: dict) -> None:
         core = np.random.PCG64()
         buffer = np.random.PCG64()
         core.state = state["core_query"]
         buffer.state = state["dynamic_buffer"]
-        torch_state = state["torch_cpu"]
-        python_state = state["python"]
-        torch.Generator().set_state(torch_state)
-        random.Random().setstate(python_state)
+        self.restore_model(state)
         self.core = np.random.Generator(core)
         self.buffer = np.random.Generator(buffer)
-        self.torch_state = torch_state.clone()
-        self.python_state = python_state
 
 
 def fresh_decoder(plan: SamplingPlan) -> QueryDecoder:
@@ -143,6 +198,7 @@ class Trainer:
         self.parent_updates = 0
         self.phase_updates = 0
         self.last_update = None
+        self.input_audit = {"schema_version": 1, "sha256": EMPTY_TRAINING_INPUT_SHA256, "trace_prefix": []}
         self._usable = True
 
     @property
@@ -166,38 +222,63 @@ class Trainer:
         }
 
     def step(self, objective: Loss) -> StepTrace:
+        self._begin_step()
+        with span("source_read_verify_unpack"):
+            batch = self.stream.take(self.budget.batch_size)
+        indices, buffers = self._draw_queries()
+        accumulated = self._optimize(objective, self.model, batch.shots, indices, buffers)
+        return self._finish_step(accumulated, batch.identities, indices, buffers)
+
+    def _begin_step(self) -> None:
         if not self._usable:
             raise RuntimeError("reload a completed update checkpoint after a failed training action")
         self._check_parent()
         if self.complete:
             raise ValueError("the phase has reached its declared update budget")
         self._usable = False
-        batch = self.stream.take(self.budget.batch_size)
+
+    def _draw_queries(self) -> tuple[NDArray[np.int64], Buffers | None]:
         indices = sample_core_indices(self.budget.batch_size, self.stream.plan.core_count, rng=self.randomness.core)
         buffers = None
         if self.dynamic_choices is not None:
             buffers = sample_buffer_pair(self.dynamic_choices, self.randomness.buffer)
+        return indices, buffers
+
+    def _optimize(self, objective, model, shots, indices, buffers, *, suppress_sync=None) -> float:
+        local_size = len(indices)
         accumulated = 0.0
-        self.model.train()
+        model.train()
         self.optimizer.zero_grad(set_to_none=True)
         with self.randomness.model_stream():
-            for start in range(0, self.budget.batch_size, self.budget.microbatch_size):
-                stop = min(start + self.budget.microbatch_size, self.budget.batch_size)
+            for start in range(0, local_size, self.budget.microbatch_size):
+                stop = min(start + self.budget.microbatch_size, local_size)
                 rows = slice(start, stop)
-                mean_loss = objective(self.model, _take_rows(batch.shots, rows), indices[rows], buffers)
-                if mean_loss.ndim != 0 or not bool(torch.isfinite(mean_loss)):
-                    raise ValueError("each microbatch must supply a finite scalar mean loss")
-                weighted = mean_loss * ((stop - start) / self.budget.batch_size)
-                weighted.backward()
+                sync_last = suppress_sync is not None and stop == local_size
+                with suppress_sync() if suppress_sync is not None and not sync_last else nullcontext():
+                    mean_loss = objective(model, _take_rows(shots, rows), indices[rows], buffers)
+                    if mean_loss.ndim != 0 or not bool(torch.isfinite(mean_loss)):
+                        raise ValueError("each microbatch must supply a finite scalar mean loss")
+                    weighted = mean_loss * ((stop - start) / local_size)
+                    with span("backward_with_sync" if sync_last else "backward"):
+                        weighted.backward()
                 accumulated += weighted.detach().item()
             if any(p.grad is not None and not bool(torch.isfinite(p.grad).all()) for p in self.model.parameters()):
                 raise ValueError("nonfinite gradient in the logical minibatch")
-            self.optimizer.step()
-            if self.scheduler is not None:
-                self.scheduler.step()
+            with span("optimizer_scheduler"):
+                self.optimizer.step()
+                if self.scheduler is not None:
+                    self.scheduler.step()
+        return accumulated
+
+    def _finish_step(self, loss, identities, indices, buffers) -> StepTrace:
         self.phase_updates += 1
-        trace = StepTrace(self.phase_updates, accumulated, batch.identities, tuple(map(int, indices)), buffers)
+        trace = StepTrace(self.phase_updates, loss, identities, tuple(map(int, indices)), buffers)
         self.last_update = asdict(trace)
+        self.input_audit["sha256"] = _next_training_input(self.input_audit["sha256"], self.last_update)
+        if len(self.input_audit["trace_prefix"]) < TRACE_PREFIX_UPDATES:
+            self.input_audit["trace_prefix"].append({
+                key: self.last_update[key] for key in ("update", "trajectories", "cores", "buffers")
+            })
         self._usable = True
         return trace
 
@@ -212,6 +293,7 @@ class Trainer:
             "optimizer_state": self.optimizer.state_dict(),
             "scheduler_state": None if self.scheduler is None else self.scheduler.state_dict(),
             "random_states": self.randomness.record(), "last_update": self.last_update,
+            "training_inputs": deepcopy(self.input_audit),
         }
 
     def _check_parent(self) -> None:
@@ -222,6 +304,8 @@ class Trainer:
         """Restore a checkpoint into a reconstructed trainer for the same run."""
         self._usable = False
         try:
+            if "distributed_state" in payload:
+                raise ArtifactError("resume a DDP checkpoint with its original distributed topology")
             if payload["contract"] != self.contract() or payload["model"]["architecture"] != self.architecture:
                 raise ArtifactError("checkpoint training contract or model schema differs")
             parent, local = _check_counters(payload, self.budget)
@@ -244,6 +328,7 @@ class Trainer:
             self.stream.seek(cursor)
             self.parent_updates, self.phase_updates = parent, local
             self.last_update = trace
+            self.input_audit = deepcopy(_checked_training_inputs(payload["training_inputs"], local, self.budget.batch_size))
             self.randomness.restore(payload["random_states"])
         except ArtifactError:
             raise
@@ -342,11 +427,13 @@ class MemoryObjective:
         return batch_features(examples + tuple(core_examples))
 
     def __call__(self, model: nn.Module, shots: ShotBatch, cores: NDArray[np.int64], buffers: Buffers | None) -> Tensor:
-        features = self.prepare(shots, cores, buffers)
-        batch = prepare_model_batch(features, distance=self.layout.distance)
-        logits = model(batch)
-        count = len(shots.shot_ids)
-        return query_loss(
-            logits[:count], torch.from_numpy(shots.global_labels), logits[count:], torch.from_numpy(shots.core_labels),
-            core_indices=torch.from_numpy(cores), core_weight=self.core_weight,
-        ).total
+        with span("features"):
+            features = self.prepare(shots, cores, buffers)
+            batch = prepare_model_batch(features, distance=self.layout.distance)
+        with span("forward_loss"):
+            logits = model(batch)
+            count = len(shots.shot_ids)
+            return query_loss(
+                logits[:count], torch.from_numpy(shots.global_labels), logits[count:], torch.from_numpy(shots.core_labels),
+                core_indices=torch.from_numpy(cores), core_weight=self.core_weight,
+            ).total

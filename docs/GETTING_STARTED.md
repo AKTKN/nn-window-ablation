@@ -80,6 +80,24 @@ the stored capacity and retain the generator's seed, family, replicate, and
 training phase. The evaluation example below uses the earlier `base`
 checkpoint. Substitute `runs/stored/checkpoint.pt` to evaluate the stored run.
 
+On Linux, the same saved training set can be used by two CPU/Gloo ranks.
+This example still consumes four trajectories in two updates.
+
+```bash
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+export BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+nnwa train runtime=local_cpu runtime.allocated_cpus=2 runtime.processes=2 \
+  training.execution=ddp run_name=stored-ddp \
+  data.train_source=stored_shards data.id=training \
+  training.max_steps=2 training.batch_size=2 training.microbatch_size=1 \
+  training.optimizer=adam training.learning_rate=0.001 training.scheduler=none \
+  checkpoint.save_every_updates=2
+```
+
+Resume with the same layout and `checkpoint.resume_from=runs/stored-ddp/checkpoint.pt`.
+Use the finished checkpoint with either inline or parallel evaluation.
+[CPU DDP execution and replay](verification/cpu_ddp_training.md)
+
 ## 3. Evaluate one checkpoint three ways
 
 ```bash

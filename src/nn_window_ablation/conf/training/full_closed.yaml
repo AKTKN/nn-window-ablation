@@ -25,3 +25,5 @@ dynamic_buffers:
   ratios: [0.0, 0.5, 1.0]
   distribution: independent_uniform
   sampling_unit: minibatch
+execution: single
+ddp_timeout_seconds: 120

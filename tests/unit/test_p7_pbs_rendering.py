@@ -93,3 +93,21 @@ def test_p7_resume_is_rendered_with_original_run_name(job):
     job["stage"] = "resume"
     job["overrides"].append('checkpoint.resume_from="/shared/job runs/base.01/checkpoint.pt"')
     assert render_script(JobSpec.from_record(job))
+
+
+def test_cpu_ddp_train_and_resume_render_with_one_supervisor(job):
+    job["overrides"] += [
+        "training.execution=ddp", "runtime.processes=4", "training.batch_size=8",
+        "training.microbatch_size=1", "data.train_source=stored_shards", "data.id=canonical",
+    ]
+    for stage in ("train", "resume"):
+        job["stage"] = stage
+        if stage == "resume":
+            job["overrides"].append('checkpoint.resume_from="/shared/job runs/base.01/checkpoint.pt"')
+        plan = render_script(JobSpec.from_record(job))
+        argv = shlex.split(plan.splitlines()[-1])
+        assert argv.count("exec") == 1
+        assert "runtime.processes=4" in json.loads(argv[-1])["overrides"]
+    job["resources"]["ncpus"] = 2
+    with pytest.raises(ConfigError, match="exceeding runtime.allocated_cpus"):
+        render_script(JobSpec.from_record(job))

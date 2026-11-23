@@ -301,10 +301,16 @@ def _verified_artifact(job: JobSpec, config, path: Path) -> tuple[dict, dict]:
     if job.stage in ("train", "resume"):
         from .checkpoints import load_checkpoint
         from .execution import _resume_contract
-        from .training import final_update_count
+        from .training import distributed_state, final_update_count
 
         state = load_checkpoint(path)
         final_update_count(state)
+        topology = distributed_state(state)
+        if config.training.execution == "ddp":
+            if topology is None or topology["world_size"] != config.runtime.processes:
+                raise ArtifactError("training checkpoint does not match the planned DDP world size")
+        elif topology is not None:
+            raise ArtifactError("single-process training plan has a DDP checkpoint")
         receipt = read_json(path.with_name("run.json"))
         if (receipt.get("status") != "complete" or receipt.get("checkpoint") != file_integrity(path)
                 or state["run"]["resume_contract"] != _resume_contract(config.to_record())):
@@ -385,6 +391,11 @@ def execute_job(job: JobSpec) -> int:
             evaluation_workers=config.evaluation.workers,
             evaluation_worker_threads=evaluation_worker_threads(config.runtime, config.evaluation),
             evaluation_max_in_flight=config.evaluation.max_in_flight,
+        )
+    elif job.stage in ("train", "resume"):
+        record["resolved_runtime"].update(
+            training_execution=config.training.execution,
+            training_processes=config.runtime.processes,
         )
     write_json(status, record)
     code = None

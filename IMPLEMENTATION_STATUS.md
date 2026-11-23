@@ -19,6 +19,8 @@ The reliability update adds bounded dataset readers, periodic checkpoints,
 and transactional evaluation resume.
 Multicore Phase 2 adds a bounded Linux spawn pool for frozen, saved-shot
 evaluation and verified resume across worker counts.
+Multicore Phase 3 adds synchronous CPU/Gloo training on saved shards with
+a global update budget and same-topology checkpoint replay.
 
 ## GitHub publication
 
@@ -52,6 +54,26 @@ The scientific pilot is $d=5$; a small $d=3$ unit fixture is permitted in P1 but
 not a required training stage or the pilot.
 
 ## Validation record
+
+### Multicore Phase 3
+
+The CPU/Gloo training checks passed 304 ordinary tests and 23 resource
+tests. The distance-5 checks exercised globally unused convolution
+parameters, matched continuations, and evaluation of a terminal DDP
+checkpoint. Same-topology pause and rank-loss replay restored model,
+optimizer, scheduler, cursor, and rank RNG state exactly.
+
+The measured 2/4/8-CPU serial and DDP runs used one canonical stored
+dataset and matched all 96 trajectory identities, sampled core choices,
+and 12 global updates. The paired 2- and 4-CPU runs met the predeclared
+weight and Adam tolerances. The 8-CPU pair exceeded the weight tolerance
+at one GRU coefficient, which also differed in the pre-DDP serial thread
+comparison. A one-thread diagnostic matched the eight-rank weights and
+moments within the unchanged tolerances and traced the outlier to the first
+Adam update under different thread counts. The raw timing, process-tree
+memory, and I/O records were retained. Compute-node validation and the full
+multicore audit after parallel generation remain pending.
+[CPU DDP verification](docs/verification/cpu_ddp_training.md)
 
 ### Multicore Phase 2
 

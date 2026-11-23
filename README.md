@@ -120,6 +120,11 @@ To train from a finalized train split, specify `data.train_source=stored_shards`
 and its `data.id`. [Configuration](src/nn_window_ablation/conf/README.md) ·
 [P4 verification](docs/verification/P4.md)
 
+Saved-data training can use a synchronous Linux CPU/Gloo group with
+`training.execution=ddp` and an explicit `runtime.processes`.
+`training.batch_size` counts trajectories across the whole group.
+[CPU DDP example and verification](docs/verification/cpu_ddp_training.md)
+
 ## Evaluate and analyze paired trajectories
 
 Continue in the same scratch directory using the dataset and terminal

@@ -117,6 +117,24 @@ and uses the pair for every accumulation microbatch. Set
 on the selected immutable validation split for each arm. The terminal update
 determines the checkpoint. [P6 verification](../../../docs/verification/P6.md)
 
+CPU training defaults to `training.execution=single` with
+`runtime.processes=1`. Use `training.execution=ddp` with
+`data.train_source=stored_shards` to run one Linux Gloo group. Set
+`runtime.processes` to the world size and `runtime.intraop_threads` to the
+threads per rank. DDP requires one inter-op thread, zero loader workers,
+and inline sampling settings. The CPU allocation and effective process
+affinity must cover the world size times the per-rank threads. The launcher
+also checks any visible cgroup-v2 CPU bandwidth limit.
+
+`training.batch_size` is the global number of trajectories per update.
+Divide it evenly across ranks. `training.microbatch_size` is a local limit
+and defaults to one rank's local batch when null. It may leave a shorter
+last microbatch. `training.ddp_timeout_seconds` defaults to 120 and covers
+Gloo collectives and the wait for peer exits before final publication.
+Exact resume uses the original distributed configuration and source.
+Terminal checkpoints can be used for evaluation and continuation without
+a live process group. [CPU DDP verification](../../../docs/verification/cpu_ddp_training.md)
+
 `evaluation.id` selects an inference procedure. Statistical result identity also
 includes the checkpoint's immutable training regime: window inference applied
 to `full_closed`, `continued_full`, `fixed_window`, and `dynamic_window`

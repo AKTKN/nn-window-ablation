@@ -143,6 +143,16 @@ share the same scientific run name and settings. Profiling has its own
 `profile` settings for `batch_size`, `warmup`, and `steps`, defaulting to
 2, 1, and 2. [OpenPBS qsub](https://github.com/openpbs/openpbs/blob/master/doc/man1/qsub.1B)
 
+For CPU DDP, use the same `train` or `resume` plan with `threads` set
+to the requested threads per rank. Include `training.execution=ddp`,
+`runtime.processes=P`, `data.train_source=stored_shards`, and an explicit
+saved `data.id` in the overrides. Request a single node with at least
+`P * threads` CPUs. The rendered script invokes one `nnwa train` supervisor.
+The global batch must be divisible by `P`; the microbatch limit applies
+inside a rank. Use the same rank count and numerical settings for resume.
+The receipt verifies the completed checkpoint's topology. Compute-node
+Gloo and filesystem checks are pending. [CPU DDP execution](verification/cpu_ddp_training.md)
+
 ## 4. Validate and run on an allocated node
 
 Set the installed `qsub` and `qstat` paths and submit the probe first.

@@ -1,5 +1,7 @@
 """Phase-scoped trajectory order and resumable chunk positions."""
 
+from collections import OrderedDict
+from collections.abc import Iterator
 from dataclasses import dataclass
 from contextlib import ExitStack
 
@@ -31,7 +33,7 @@ class TrajectoryStream:
         self.cursor = ChunkCursor()
         self._cached_index = None
         self._cached_shots = None
-        self._permutation = None
+        self._orders = OrderedDict()
         self._shard = None
         self._owner = ExitStack()
         self._closed = False
@@ -44,11 +46,12 @@ class TrajectoryStream:
 
     def _release_chunk(self) -> None:
         self._owner.close()
-        self._shard = self._cached_shots = self._cached_index = self._permutation = None
+        self._shard = self._cached_shots = self._cached_index = None
 
     def close(self) -> None:
         self._closed = True
         self._release_chunk()
+        self._orders.clear()
 
     def record(self) -> dict:
         return {
@@ -82,19 +85,52 @@ class TrajectoryStream:
             self._release_chunk()
         self.cursor = cursor
 
+    def _order(self, chunk: int):
+        if chunk not in self._orders:
+            _, rows = self.plan.chunk_bounds(chunk)
+            rng = np.random.Generator(np.random.PCG64(self.plan.namespace.seed("trajectory_order", chunk)))
+            self._orders[chunk] = rng.permutation(rows)
+            if len(self._orders) > 2:
+                self._orders.popitem(last=False)
+        self._orders.move_to_end(chunk)
+        return self._orders[chunk]
+
+    def _batch_end(self, count: int) -> int:
+        if self._closed:
+            raise RuntimeError("trajectory stream is closed")
+        if type(count) is not int or count < 1:
+            raise ValueError("a minibatch must contain a positive number of trajectories")
+        stop = self.position + count
+        if stop > self.capacity:
+            raise ValueError("training dataset cannot supply the complete trajectory batch")
+        return stop
+
+    def _segments(self, stop: int) -> Iterator[tuple[int, int, int]]:
+        position = self.position
+        while position < stop:
+            chunk, row = divmod(position, self.plan.chunk_rows)
+            _, rows = self.plan.chunk_bounds(chunk)
+            count = min(rows - row, stop - position)
+            yield chunk, row, count
+            position += count
+
+    def planned_identities(self, count: int) -> tuple[TrajectoryID, ...]:
+        """Preview the physical row identities without opening or sampling a shard."""
+        stop = self._batch_end(count)
+        return tuple(
+            TrajectoryID(self.plan.dataset_id, chunk, int(index))
+            for chunk, row, size in self._segments(stop) for index in self._order(chunk)[row:row + size]
+        )
+
     def _read_part(self, chunk: int, first: int, count: int) -> TrajectoryBatch:
         if chunk != self._cached_index:
             self._release_chunk()
-            _, rows = self.plan.chunk_bounds(chunk)
-            rng = np.random.Generator(np.random.PCG64(self.plan.namespace.seed("trajectory_order", chunk)))
-            permutation = rng.permutation(rows)
             if self.dataset is None:
                 self._cached_shots = sample_chunk(self.plan, self.bundle, chunk)
             else:
                 self._shard = self._owner.enter_context(self.dataset.open_shard(chunk))
-            self._permutation = permutation
             self._cached_index = chunk
-        indices = self._permutation[first:first + count]
+        indices = self._order(chunk)[first:first + count]
         if self.dataset is not None:
             return self._shard.read(indices)
         source = self._cached_shots
@@ -115,19 +151,8 @@ class TrajectoryStream:
             raise
 
     def _take(self, count: int) -> TrajectoryBatch:
-        if type(count) is not int or count < 1:
-            raise ValueError("a minibatch must contain a positive number of trajectories")
-        stop = self.position + count
-        if stop > self.capacity:
-            raise ValueError("training dataset cannot supply the complete trajectory batch")
-        position = self.position
-        pieces = []
-        while position < stop:
-            chunk, row = divmod(position, self.plan.chunk_rows)
-            _, rows = self.plan.chunk_bounds(chunk)
-            take = min(rows - row, stop - position)
-            pieces.append(self._read_part(chunk, row, take))
-            position += take
+        stop = self._batch_end(count)
+        pieces = [self._read_part(chunk, row, size) for chunk, row, size in self._segments(stop)]
         if len(pieces) == 1:
             batch = pieces[0]
         else:

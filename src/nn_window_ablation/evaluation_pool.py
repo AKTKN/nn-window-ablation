@@ -50,7 +50,7 @@ def observe_process() -> dict:
 
 
 @contextmanager
-def stop_on_signal():
+def stop_on_signal(operation: str = "evaluation"):
     """Defer termination to transaction/scheduling boundaries in the main thread."""
     requested = None
 
@@ -60,7 +60,7 @@ def stop_on_signal():
 
     def check():
         if requested is not None:
-            raise ArtifactError(f"evaluation interrupted by {signal.Signals(requested).name}")
+            raise ArtifactError(f"{operation} interrupted by {signal.Signals(requested).name}")
 
     old = {}
     try:
@@ -86,17 +86,21 @@ def cpu_affinity(cpus):
 _writer_lease = None
 
 
-def _initialize(parent_pid, lease, log_dir, slots, next_slot, initialize, initializer_args):
-    global _writer_lease
-    start = perf_counter()
+def bind_to_parent(parent_pid: int) -> None:
     # PR_SET_PDEATHSIG. Checking PPID afterwards covers death before prctl.
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(1, signal.SIGKILL, 0, 0, 0):
-        raise OSError(ctypes.get_errno(), "setting evaluation worker parent-death signal")
+        raise OSError(ctypes.get_errno(), "setting worker parent-death signal")
     if os.getppid() != parent_pid:
         os._exit(1)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
+def _initialize(parent_pid, lease, log_dir, slots, next_slot, initialize, initializer_args):
+    global _writer_lease
+    start = perf_counter()
+    bind_to_parent(parent_pid)
     _writer_lease = lease.open("rb")
     fcntl.flock(_writer_lease, fcntl.LOCK_SH | fcntl.LOCK_NB)
 

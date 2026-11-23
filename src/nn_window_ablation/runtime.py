@@ -12,6 +12,15 @@ NATIVE_THREAD_VARIABLES = (
 )
 
 
+def reject_excessive_native_threads(threads: int, operation: str) -> None:
+    for name in NATIVE_THREAD_VARIABLES:
+        inherited = os.environ.get(name)
+        if inherited is not None and (
+            not inherited.isascii() or not inherited.isdecimal() or not 1 <= int(inherited) <= threads
+        ):
+            raise ConfigError(f"inherited {name}={inherited!r} exceeds or conflicts with {operation} threads={threads}")
+
+
 @contextmanager
 def native_thread_limits(threads: int):
     """Set the environment inherited by spawned processes."""
