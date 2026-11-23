@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 import random
+from typing import Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -13,15 +14,25 @@ from torch import Tensor, nn
 
 from .artifacts import ArtifactError
 from .data import SamplingPlan, StreamNamespace, TrajectoryID
-from .features import batch_features, build_feature_geometry, build_features
+from .features import FeatureBatch, batch_features, build_feature_geometry, build_features
 from .models.gnn_rnn import QueryDecoder, prepare_model_batch
 from .models.objective import query_loss, sample_core_indices
 from .simulation import CircuitBundle, ShotBatch
 from .streams import ChunkCursor, TrajectoryStream
-from .windows import Buffers, build_observation_layout, crop_observations, select_window
+from .windows import Buffers, WindowView, build_observation_layout, crop_observations, select_window
 
 
 Loss = Callable[[nn.Module, ShotBatch, NDArray[np.int64], Buffers | None], Tensor]
+
+
+class IntegerDraw(Protocol):
+    def integers(self, high: int, *, size: int) -> NDArray[np.int64]: ...
+
+
+def sample_buffer_pair(choices: tuple[int, ...], rng: IntegerDraw) -> Buffers:
+    """Draw two independent uniform indices for one effective minibatch."""
+    left, right = rng.integers(len(choices), size=2)
+    return Buffers(choices[left], choices[right])
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,8 +176,7 @@ class Trainer:
         indices = sample_core_indices(self.budget.batch_size, self.stream.plan.core_count, rng=self.randomness.core)
         buffers = None
         if self.dynamic_choices is not None:
-            left, right = self.randomness.buffer.choice(self.dynamic_choices, size=2)
-            buffers = Buffers(int(left), int(right))
+            buffers = sample_buffer_pair(self.dynamic_choices, self.randomness.buffer)
         accumulated = 0.0
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
@@ -243,8 +253,11 @@ class Trainer:
 
     def fork_from(self, payload: dict) -> None:
         """Initialize a continuation from a completed base model with fresh training state."""
-        if self.phase_updates or self.parent_updates or self.stream.position or self.optimizer.state:
-            raise ValueError("a fork requires a fresh trainer and optimizer")
+        if (
+            self.phase_updates or self.parent_updates or self.stream.position or self.optimizer.state
+            or (self.scheduler is not None and self.scheduler.last_epoch != 0)
+        ):
+            raise ValueError("a fork requires a fresh trainer, optimizer, and scheduler")
         parent_plan = SamplingPlan.from_record(payload["contract"]["source"]["plan"])
         current = self.stream.plan
         if (
@@ -258,6 +271,8 @@ class Trainer:
         if payload["model"]["architecture"] != self.architecture:
             raise ArtifactError("fork parent model schema differs")
         parent_count = final_update_count(payload)
+        if payload["counters"]["parent_updates"] != 0:
+            raise ArtifactError("a full-context base checkpoint must have no parent updates")
         self.model.load_state_dict(payload["model"]["state_dict"], strict=True)
         self.parent_updates = parent_count
 
@@ -293,8 +308,9 @@ class MemoryObjective:
         self.core_context = core_context
         self.fixed_buffers = fixed_buffers
         self.core_weight = core_weight
+        self._core_views: dict[tuple[int, Buffers | None], WindowView] = {}
 
-    def __call__(self, model: nn.Module, shots: ShotBatch, cores: NDArray[np.int64], buffers: Buffers | None) -> Tensor:
+    def core_view(self, index: int, buffers: Buffers | None) -> WindowView:
         if self.core_context == "full_closed":
             selected = None
         elif self.core_context == "deployment_window":
@@ -303,16 +319,31 @@ class MemoryObjective:
             selected = buffers
         else:
             raise ValueError("missing or unsupported core observation context")
+        key = (index, selected)
+        if key not in self._core_views:
+            self._core_views[key] = select_window(self.layout, self.layout.core_query(index), selected)
+        return self._core_views[key]
+
+    def detector_tokens(self, cores: tuple[int, ...], buffers: Buffers | None) -> int:
+        """Count raw detector columns selected by each global and core query."""
+        return len(cores) * len(self.global_view.detectors) + sum(len(self.core_view(index, buffers).detectors) for index in cores)
+
+    def prepare(self, shots: ShotBatch, cores: NDArray[np.int64], buffers: Buffers | None) -> FeatureBatch:
+        if cores.dtype != np.int64 or cores.shape != shots.shot_ids.shape:
+            raise ValueError("each trajectory requires one int64 core index")
         examples = build_features(crop_observations(self.global_view, shots.detectors, shots.shot_ids), self.geometry)
         core_examples = []
         for row, core in enumerate(cores):
-            target = self.layout.core_query(int(core))
-            view = select_window(self.layout, target, selected)
+            view = self.core_view(int(core), buffers)
             sample = slice(row, row + 1)
             core_examples.extend(build_features(
                 crop_observations(view, shots.detectors[sample], shots.shot_ids[sample]), self.geometry,
             ))
-        batch = prepare_model_batch(batch_features(examples + tuple(core_examples)), distance=self.layout.distance)
+        return batch_features(examples + tuple(core_examples))
+
+    def __call__(self, model: nn.Module, shots: ShotBatch, cores: NDArray[np.int64], buffers: Buffers | None) -> Tensor:
+        features = self.prepare(shots, cores, buffers)
+        batch = prepare_model_batch(features, distance=self.layout.distance)
         logits = model(batch)
         count = len(shots.shot_ids)
         return query_loss(

@@ -1,0 +1,7 @@
+defaults:
+  - primary
+  - _self_
+
+contrasts:
+  - Splus_minus_W
+  - W_minus_D

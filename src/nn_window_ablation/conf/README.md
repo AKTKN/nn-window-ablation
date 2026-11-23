@@ -11,10 +11,10 @@ CLI field overrides apply after the experiment [1].
 | `noise` | `uniform_circuit` | Four specified circuit-noise probabilities equal to $p$. |
 | `window` | `fixed_d` | Fixed core partition and deployment buffer ratios. |
 | `model` | `query_gnn_rnn` | Width 256, four GRU layers, common scalar query head. |
-| `training` | `full_closed` | Full-context objective; continuation groups are separate. |
+| `training` | `full_closed` | Base objective and matched S+/W/D continuation presets. |
 | `data` | `paired` | Shot identity, storage, split, and data-loader settings. |
 | `evaluation` | `G` | Individual G/F/S or paired inference from a terminal checkpoint. |
-| `analysis` | `primary` | Whole-shot LER and paired contrasts. |
+| `analysis` | `primary` | Whole-shot LER and paired contrasts. Use `adaptation` for S+−W and W−D. |
 | `runtime` | `cpu` | CPU threads/processes independent of scientific conditions. |
 | `experiment` | `pilot_d5` | Initial distance-5 pilot; `paired_d5/paired_d7` are later presets. |
 
@@ -103,6 +103,14 @@ across S+/W/D. Do not key these streams by the arm's training name. Keep the
 phase-local chunk cursor in resumable state. This produces new additional draws
 without breaking cross-arm pairing.
 
+A `train --multirun training=continued_full,fixed_window,dynamic_window` sweep
+checks parent, data, optimizer, budget, and execution settings before creating
+jobs. D independently draws the left and right buffers once per effective batch
+and uses the pair for every accumulation microbatch. Set
+`training.validation_data_id` to run a terminal-only deployment-window diagnostic
+on the selected immutable validation split for each arm. The terminal update
+determines the checkpoint. [P6 verification](../../../docs/verification/P6.md)
+
 `evaluation.id` selects an inference procedure. Statistical result identity also
 includes the checkpoint's immutable training regime: window inference applied
 to `full_closed`, `continued_full`, `fixed_window`, and `dynamic_window`
@@ -124,6 +132,11 @@ inspecting the main test results. For relative ratios, explicitly set
 as the denominator and are unresolved if that count is below the minimum or any
 resampled denominator is zero. Analysis reports one training seed and replicate
 per invocation. [P5 verification](../../../docs/verification/P5.md)
+
+`analysis=adaptation` selects the two prescribed S+/W/D contrasts. Supply prediction
+manifests for the three arms on the same held-out dataset and deployment buffers.
+An adapted contrast requires matching parent, initial model, training controls,
+and trajectory/core trace identities.
 
 ## References
 

@@ -200,7 +200,8 @@ def evaluate_workflow(
 
 
 def _read_manifest(path: Path, mapped) -> dict:
-    from .evaluation import CheckpointProvenance, _is_digest
+    from .continuation import is_digest
+    from .evaluation import CheckpointProvenance
     from .windows import Buffers, build_observation_layout, select_window
 
     record = read_json(path)
@@ -242,7 +243,7 @@ def _read_manifest(path: Path, mapped) -> dict:
             targets = (layout.global_query,) if mode == "G" else layout.queries
             queries = [_query_record(select_window(layout, target, buffers if mode == "S" else None)) for target in targets]
             if (
-                provenance.condition(mode) != entry["condition"] or not _is_digest(entry["model_state_sha256"])
+                provenance.condition(mode) != entry["condition"] or not is_digest(entry["model_state_sha256"])
                 or entry["queries"] != queries
             ):
                 raise ArtifactError("prediction condition, query partition or checkpoint provenance differs")
@@ -334,6 +335,10 @@ def _check_comparisons(conditions: dict, names: list[str]) -> list[tuple[str, st
             conditions[first]["queries"] != conditions[second]["queries"]
         ):
             raise ArtifactError("window comparisons require identical deployment queries and buffers")
+        if {first, second} <= {"S+", "W", "D"}:
+            for field in ("initial_model_sha256", "continuation_controls_sha256", "continuation_input_sha256"):
+                if left.get(field) is None or left[field] != right.get(field):
+                    raise ArtifactError("adapted comparisons require matched initialization, controls, and trajectory/core draws")
         requested.append((name, first, second))
     return requested
 

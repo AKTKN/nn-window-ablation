@@ -138,6 +138,7 @@ class TrainingConfig:
     scheduler_gamma: float | None
     reset_optimizer_at_start: bool
     checkpoint_policy: str
+    validation_data_id: str | None
     dynamic_buffers: DynamicBuffersConfig
 
 

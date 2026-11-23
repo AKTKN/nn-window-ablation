@@ -19,6 +19,7 @@ scheduler_gamma: null
 # New phase only; resume restores the saved optimizer instead.
 reset_optimizer_at_start: true
 checkpoint_policy: fixed_updates
+validation_data_id: null
 dynamic_buffers:
   enabled: true
   ratios: [0.0, 0.5, 1.0]

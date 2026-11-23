@@ -1,14 +1,14 @@
 """Frozen global and core-query inference on complete detector trajectories."""
 
 from dataclasses import dataclass
-from hashlib import sha256
 
 import numpy as np
 from numpy.typing import NDArray
 import stim
 import torch
 
-from .artifacts import ArtifactError, canonical_json
+from .artifacts import ArtifactError
+from .continuation import TRAINING_REGIMES, checked_audit, is_digest, model_tensors_sha256
 from .data import SamplingPlan
 from .features import batch_features, build_feature_geometry, build_features
 from .models.gnn_rnn import QueryDecoder, prepare_model_batch
@@ -17,19 +17,11 @@ from .training import final_update_count
 from .windows import Buffers, WindowView, build_observation_layout, crop_observations, select_window
 
 
-REGIMES = {
-    "full_closed": ("base", "random", "full_closed", "S"),
-    "continued_full": ("continuation", "full_checkpoint", "full_closed", "S+"),
-    "fixed_window": ("continuation", "full_checkpoint", "deployment_window", "W"),
-    "dynamic_window": ("continuation", "full_checkpoint", "sampled_window", "D"),
-}
-
-
 def condition_id(mode: str, training_regime: str) -> str:
-    if mode not in ("G", "F", "S") or training_regime not in REGIMES:
+    if mode not in ("G", "F", "S") or training_regime not in TRAINING_REGIMES:
         raise ValueError("unknown inference mode or checkpoint training regime")
     if mode == "S":
-        return REGIMES[training_regime][3]
+        return TRAINING_REGIMES[training_regime][3]
     return mode if training_regime == "full_closed" else f"{mode}@{training_regime}"
 
 
@@ -42,14 +34,17 @@ class CheckpointProvenance:
     training_family: str
     parent_sha256: str | None
     cumulative_updates: int
+    initial_model_sha256: str | None = None
+    continuation_controls_sha256: str | None = None
+    continuation_input_sha256: str | None = None
 
     def __post_init__(self) -> None:
-        if self.training_regime not in REGIMES or not _is_digest(self.sha256):
+        if self.training_regime not in TRAINING_REGIMES or not is_digest(self.sha256):
             raise ValueError("invalid checkpoint provenance regime or digest")
         if self.training_regime == "full_closed":
             if self.parent_sha256 is not None:
                 raise ValueError("a base checkpoint cannot have a parent digest")
-        elif not _is_digest(self.parent_sha256):
+        elif not is_digest(self.parent_sha256):
             raise ValueError("a continuation requires a valid parent digest")
         if (
             type(self.training_seed) is not int or not 0 <= self.training_seed < 2**64
@@ -58,6 +53,11 @@ class CheckpointProvenance:
             or type(self.cumulative_updates) is not int or self.cumulative_updates < 1
         ):
             raise ValueError("invalid checkpoint training seed, replicate, family, or update count")
+        evidence = (self.initial_model_sha256, self.continuation_controls_sha256, self.continuation_input_sha256)
+        if any(value is not None for value in evidence) and (
+            self.parent_sha256 is None or not all(is_digest(value) for value in evidence)
+        ):
+            raise ValueError("incomplete matched continuation provenance")
 
     def condition(self, mode: str) -> str:
         return condition_id(mode, self.training_regime)
@@ -81,7 +81,7 @@ class CheckpointProvenance:
             namespace = plan.namespace
             regime_fields = namespace.phase, training["initialization"], training["core_context"]
             if (
-                regime not in REGIMES or REGIMES[regime][:3] != regime_fields
+                regime not in TRAINING_REGIMES or TRAINING_REGIMES[regime][:3] != regime_fields
                 or training["data_stream_phase"] != namespace.phase
                 or training["global_context"] != "full_closed" or namespace.split != "train"
             ):
@@ -90,9 +90,23 @@ class CheckpointProvenance:
             if (parent is None) != (namespace.phase == "base"):
                 raise ArtifactError("checkpoint parent provenance differs from its training phase")
             parent_digest = None if parent is None else parent["sha256"]
+            audit = payload.get("continuation_audit")
+            evidence = {}
+            if audit is not None:
+                checked_audit(audit, updates=payload["counters"]["phase_updates"])
+                controls = audit["controls"]
+                if controls["parent_sha256"] != parent_digest:
+                    raise ArtifactError("continuation audit and checkpoint disagree about their parent")
+                if controls["validation"] is not None and audit["validation"] is None:
+                    raise ArtifactError("terminal continuation validation has not completed")
+                evidence = {
+                    "initial_model_sha256": controls["initial_model_sha256"],
+                    "continuation_controls_sha256": audit["controls_sha256"],
+                    "continuation_input_sha256": audit["input_sha256"],
+                }
             return cls(
                 digest, regime, namespace.master_seed, namespace.replicate, namespace.family,
-                parent_digest, final_update_count(payload),
+                parent_digest, final_update_count(payload), **evidence,
             )
         except ArtifactError:
             raise
@@ -100,17 +114,9 @@ class CheckpointProvenance:
             raise ArtifactError("checkpoint lacks compatible P4 training provenance") from exc
 
 
-def _is_digest(value: object) -> bool:
-    return isinstance(value, str) and len(value) == 64 and set(value) <= set("0123456789abcdef")
-
-
 def model_state_sha256(model: QueryDecoder) -> str:
     """Hash parameter and buffer names, dtypes, shapes, and CPU tensor bytes."""
-    digest = sha256()
-    for name, tensor in sorted(model.state_dict().items()):
-        digest.update(canonical_json([name, str(tensor.dtype), list(tensor.shape)]) + b"\n")
-        digest.update(tensor.detach().cpu().contiguous().numpy().tobytes())
-    return digest.hexdigest()
+    return model_tensors_sha256(model.state_dict())
 
 
 def binary_array(values: NDArray, *, name: str) -> NDArray[np.bool_]:

@@ -21,7 +21,7 @@ USAGE = "usage: nnwa {validate,generate,train,evaluate,analyze} [Hydra options a
 def _publish_jobs(command: str, jobs: list[ValidationJob], invocation_dir: Path) -> list[Path]:
     if command == "validate":
         return publish_validation(jobs, invocation_dir=invocation_dir)
-    from .execution import generate_workflow, train_workflow
+    from .execution import check_matched_sweep, generate_workflow, train_workflow
 
     if command == "generate":
         return [generate_workflow(job.config, overrides=job.overrides) for job in jobs]
@@ -39,6 +39,8 @@ def _publish_jobs(command: str, jobs: list[ValidationJob], invocation_dir: Path)
             for job in jobs
         ):
             raise ConfigError("new sweep jobs must share their run parent; resume jobs individually")
+        if command == "train":
+            check_matched_sweep([job.config for job in jobs])
         reserve_run_directory(first)
     return [workflow(job.config, overrides=job.overrides, sweep_index=job.sweep_index) for job in jobs]
 

@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated 2026-11-23. P0 through P5 are implemented and verified locally.
+Last updated 2026-11-23. P0 through P6 are implemented and verified locally.
 
 ## Delivered structure
 
@@ -12,6 +12,7 @@ bits and batches Lange-compatible graphs with label-independent metadata.
 The shared query decoder supports CPU forward/backward steps. P4 adds immutable
 datasets, fixed-update training, and exact CPU checkpoint replay. P5 uses one
 frozen checkpoint for paired G/F/S and reports whole-trajectory statistics.
+P6 runs matched S+/W/D continuation and verifies the controls in paired analysis.
 
 ## GitHub publication
 
@@ -37,7 +38,7 @@ checked byte for byte after removing them from the Git index.
 | P3 | Lange model adapter, shared queries, CPU profile | Implemented and independently verified locally. Allocated-node profile pending. |
 | P4 | Datasets, training, checkpoints, deterministic resume | Implemented and independently verified locally. Allocated-node checks pending. |
 | P5 | Paired G/F/S evaluation and uncertainty | Implemented and independently verified locally. Main-study choices pending. |
-| P6 | Matched S+/W/D continuation | Not implemented. |
+| P6 | Matched S+/W/D continuation | Implemented and independently verified locally. Allocated-node and campaign checks pending. |
 | P7 | PBS campaign, export, and local re-analysis | Not implemented; script templates only. |
 
 The phase contract is [05_implementation_phases.md](docs/05_implementation_phases.md).
@@ -45,6 +46,17 @@ The scientific pilot is $d=5$; a small $d=3$ unit fixture is permitted in P1 but
 not a required training stage or the pilot.
 
 ## Validation record
+
+### P6
+
+The independent cumulative run passed all 204 ordinary tests. All three
+distance-5 arms executed from the same terminal base checkpoint with matched
+trajectory/core draws and update budgets. P5 evaluated the fixed deployment
+windows and checked the continuation receipts. The D arm reproduced its full
+three-update trajectory, buffer, model, optimizer, and scheduler state after a
+fresh-process resume. The local checks include optional terminal validation
+on a separate split. Production budgets and allocated-node checks remain
+pending. [P6 verification](docs/verification/P6.md)
 
 ### P5
 

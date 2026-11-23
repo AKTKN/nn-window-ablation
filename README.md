@@ -17,6 +17,7 @@ Lange-compatible features, and batch assembly. P3 provides the shared query
 decoder, its objective, and a bounded CPU profile. P4 provides immutable
 datasets, fixed-update training, and exact local checkpoint replay. P5
 provides frozen paired inference and whole-trajectory statistical analysis.
+P6 provides matched S+/W/D continuation and checks those controls during analysis.
 
 See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for phase status and
 [AGENTS.md](AGENTS.md) for development contracts.
@@ -140,6 +141,28 @@ independent test results. [P2 verification](docs/verification/P2.md)
 
 For the decoder, checkpoint payloads, and local CPU timings, see the P3
 verification record and P4 handoff. [P3 verification](docs/verification/P3.md)
+
+## Run a matched continuation check
+
+From the same scratch directory, fork the terminal `pilot-check` checkpoint
+into one bounded sweep. These two-update settings are for a local check.
+
+```bash
+conda run -n nn_window_decoding nnwa generate runtime=local_cpu runtime.allocated_cpus=1 \
+  data.split=validation data.id=pilot-validation data.shots=2 data.shard_shots=2
+conda run -n nn_window_decoding nnwa train --multirun runtime=local_cpu runtime.allocated_cpus=1 \
+  run_name=pilot-continuation training=continued_full,fixed_window,dynamic_window \
+  checkpoint.init_from=runs/pilot-check/checkpoint.pt training.validation_data_id=pilot-validation \
+  training.max_steps=2 training.batch_size=2 training.microbatch_size=1 training.learning_rate=0.001 \
+  training.optimizer=adam training.scheduler=none data.training_chunk_shots=3
+```
+
+The three checkpoints are under `runs/pilot-continuation/hydra_sweep/{0,1,2}/`.
+Repeat the paired evaluation command for each checkpoint with a unique run name
+and the same `pilot-test` dataset and window settings. Analyze the three manifest
+paths together with `analysis=adaptation` and the explicit analysis settings above.
+This produces S+−W and W−D contrasts and checks the matched training receipts.
+[P6 verification](docs/verification/P6.md)
 
 ## References
 

@@ -1,18 +1,21 @@
-"""P4 dataset and training workflows over resolved configuration and explicit paths."""
+"""Dataset and training workflows over resolved configuration and explicit paths."""
 
 from contextlib import contextmanager
 import fcntl
 from hashlib import sha256
 from pathlib import Path
+import resource
+from time import perf_counter, process_time
 
-from .artifacts import ArtifactError, file_integrity, write_json
+from .artifacts import ArtifactError, file_integrity, verify_file, write_json
 from .config import ConfigError, ResolvedConfig, require_execution_config, validate_run_name
+from .continuation import CONTINUATION_ARMS, TRAINING_REGIMES
 from .runtime import configure_cpu_runtime
 from .workflows import _environment_record, reserve_run_directory
 
 
 def check_execution(command: str, config: ResolvedConfig) -> None:
-    """Check P4 configuration before reserving any artifact directories."""
+    """Check workflow configuration before reserving any artifact directories."""
     require_execution_config(config, command)
     data = config.data
     if (config.runtime.processes, data.num_workers, data.sampling_processes) != (1, 0, 1):
@@ -47,14 +50,17 @@ def check_execution(command: str, config: ResolvedConfig) -> None:
         or training.checkpoint_policy != "fixed_updates"
     ):
         raise ConfigError("training must retain the fixed-budget global and sampled-core objective")
-    if training.initialization == "random":
-        if training.data_stream_phase != "base" or training.core_context != "full_closed" or config.checkpoint.init_from:
-            raise ConfigError("fresh base training requires random initialization and full context")
-    elif (
-        training.initialization != "full_checkpoint" or training.data_stream_phase != "continuation"
-        or training.core_context not in ("full_closed", "deployment_window", "sampled_window")
-    ):
-        raise ConfigError("continuation requires a base checkpoint and a supported core context")
+    regime = TRAINING_REGIMES.get(training.name)
+    if regime is None or regime[:3] != (training.data_stream_phase, training.initialization, training.core_context):
+        raise ConfigError("training regime must match its initialization, context, and stream phase")
+    if training.data_stream_phase == "base" and config.checkpoint.init_from is not None:
+        raise ConfigError("fresh base training requires random initialization and full context")
+    if training.data_stream_phase == "continuation" and config.geometry.core_count != 12:
+        raise ConfigError("continuation training requires the complete 12-core partition")
+    if training.validation_data_id is not None:
+        validate_run_name(training.validation_data_id)
+        if training.data_stream_phase != "continuation":
+            raise ConfigError("training.validation_data_id selects terminal continuation validation")
     dynamic = training.dynamic_buffers
     if dynamic.enabled != (training.core_context == "sampled_window"):
         raise ConfigError("sampled-window context and dynamic buffer mode must agree")
@@ -64,6 +70,31 @@ def check_execution(command: str, config: ResolvedConfig) -> None:
         raise ConfigError("dynamic buffer draws require the prescribed uniform logical-minibatch policy")
     if config.checkpoint.path is not None:
         raise ConfigError("checkpoint.path selects evaluation weights; training uses init_from or resume_from")
+
+
+def check_matched_sweep(configs: list[ResolvedConfig]) -> None:
+    """Preflight S+/W/D sweep groups before creating run directories."""
+    groups = {}
+    for config in configs:
+        if config.training.name in CONTINUATION_ARMS:
+            key = config.seed, config.data.replicate, config.geometry.distance
+            groups.setdefault(key, []).append(config)
+    for arms in groups.values():
+        if {config.training.name for config in arms} != CONTINUATION_ARMS:
+            continue
+        expected = None
+        for config in arms:
+            record = config.to_record()
+            shared = {key: record[key] for key in ("code", "noise", "window", "model", "data", "runtime")}
+            shared["training"] = {
+                key: value for key, value in record["training"].items()
+                if key not in ("name", "core_context", "dynamic_buffers")
+            }
+            shared["parent"] = record["checkpoint"]["init_from"]
+            shared["data_root"] = record["paths"]["data_root"]
+            if expected is not None and shared != expected:
+                raise ConfigError("S+/W/D sweep arms must share their parent, data, optimizer, and budget controls")
+            expected = shared
 
 
 def _circuit_and_namespace(config: ResolvedConfig):
@@ -112,6 +143,59 @@ def _training_stream(config: ResolvedConfig):
     else:
         plan = SamplingPlan.from_circuit(bundle, namespace, chunk_rows=config.data.training_chunk_shots)
     return TrajectoryStream(plan, bundle, dataset)
+
+
+def _validation_dataset(config: ResolvedConfig, plan):
+    from .data import open_dataset
+
+    name = config.training.validation_data_id
+    if name is None:
+        return None
+    mapped = open_dataset(config.paths.data_root / name, expected_split="validation")
+    if (mapped.plan.spec, mapped.plan.original_sha256, mapped.plan.teacher_sha256) != (
+        plan.spec, plan.original_sha256, plan.teacher_sha256,
+    ):
+        raise ArtifactError("validation dataset physical circuit differs from training")
+    return mapped
+
+
+def _continuation_controls(trainer, objective, parent: dict, initial_model: str, validation, config: ResolvedConfig) -> dict:
+    return {
+        "parent_sha256": parent["sha256"], "initial_model_sha256": initial_model,
+        "trainer": {key: value for key, value in trainer.contract().items() if key != "dynamic_choices"},
+        "global_context": "full_closed", "core_loss_weight": objective.core_weight,
+        "loss_normalization": "one_plus_core_loss_weight", "checkpoint_policy": "fixed_updates",
+        "sampled_cores_per_trajectory": 1, "core_sampling": "uniform", "optimizer_reset": True,
+        "deployment_buffers": [objective.fixed_buffers.left, objective.fixed_buffers.right],
+        "execution": [config.runtime.intraop_threads, config.runtime.interop_threads, config.runtime.allocated_cpus],
+        "validation": None if validation is None else {
+            "schedule": "terminal_only", "phase_update": trainer.budget.max_steps,
+            "dataset_id": validation.plan.dataset_id, "manifest_sha256": validation.manifest_sha256,
+            "shots": validation.plan.total_rows,
+        },
+    }
+
+
+def _terminal_validation(trainer, objective, mapped) -> dict:
+    import numpy as np
+
+    from .evaluation import FrozenEvaluator, compose_core_decisions, model_state_sha256
+
+    before = model_state_sha256(trainer.model)
+    evaluator = FrozenEvaluator(trainer.model, mapped.bundle, objective.fixed_buffers)
+    failures = 0
+    batch_size = trainer.budget.microbatch_size
+    for shard in mapped.shards:
+        for start in range(0, len(shard.shot_ids), batch_size):
+            shots = shard.read(slice(start, start + batch_size)).shots
+            predictions = evaluator.logits("S", shots.detectors, shots.shot_ids) >= 0
+            failures += int(np.count_nonzero(compose_core_decisions(predictions) ^ shots.global_labels))
+    if model_state_sha256(trainer.model) != before:
+        raise ArtifactError("terminal validation changed model parameters or buffers")
+    return {
+        "phase_update": trainer.phase_updates, "shots": mapped.plan.total_rows, "failures": failures,
+        "ler": failures / mapped.plan.total_rows,
+    }
 
 
 def _resume_contract(record: dict) -> dict:
@@ -172,7 +256,8 @@ def _run_training(
 ) -> Path:
     import torch
 
-    from .checkpoints import load_checkpoint, save_checkpoint
+    from .checkpoints import load_checkpoint
+    from .continuation import checked_audit, model_tensors_sha256, record_update, start_audit
     from .training import MemoryObjective, Trainer, UpdateBudget, fresh_decoder
     from .windows import Buffers, buffer_lengths
 
@@ -182,6 +267,7 @@ def _run_training(
         raise ConfigError("pause must be within the declared phase update budget")
     budget = UpdateBudget(settings.max_steps, settings.batch_size, settings.microbatch_size or settings.batch_size)
     stream = _training_stream(config)
+    validation = _validation_dataset(config, stream.plan)
     model = fresh_decoder(stream.plan)
     optimizer_type = torch.optim.Adam if settings.optimizer == "adam" else torch.optim.SGD
     optimizer = optimizer_type(model.parameters(), lr=settings.learning_rate, foreach=False)
@@ -208,9 +294,10 @@ def _run_training(
         parent = config.checkpoint.init_from
         parent_record = None
         if parent is not None:
-            parent_state = load_checkpoint(parent)
-            trainer.fork_from(parent_state)
             parent_record = {"path": str(parent), **file_integrity(parent)}
+            parent_state = load_checkpoint(parent)
+            verify_file(parent, {key: parent_record[key] for key in ("bytes", "sha256")})
+            trainer.fork_from(parent_state)
         if sweep_index is None:
             directory = reserve_run_directory(config)
         else:
@@ -218,6 +305,7 @@ def _run_training(
             directory.mkdir(parents=True)
         relative = directory.relative_to(config.paths.run_root)
     checkpoint = directory / "checkpoint.pt"
+    audit = None
 
     with _training_lock(directory):
         if resume is not None:
@@ -230,6 +318,13 @@ def _run_training(
             ):
                 raise ArtifactError("checkpoint belongs to another run, resolved configuration, or environment")
             trainer.restore(state)
+            if trainer.parent_updates:
+                audit = checked_audit(state.get("continuation_audit"), updates=trainer.phase_updates)
+                controls = _continuation_controls(
+                    trainer, objective, run["parent"], audit["controls"]["initial_model_sha256"], validation, config,
+                )
+                if audit["controls"] != controls:
+                    raise ArtifactError("checkpoint continuation controls differ from this run")
             if stop < trainer.phase_updates:
                 raise ConfigError("pause cannot precede the restored phase update")
         else:
@@ -243,15 +338,39 @@ def _run_training(
                 },
                 "parent": parent_record,
             }
-            save_checkpoint(checkpoint, {**trainer.snapshot(), "run": run})
+            if parent_record is not None:
+                initial = model_tensors_sha256(model.state_dict())
+                audit = start_audit(_continuation_controls(trainer, objective, parent_record, initial, validation, config))
+            _save_training_checkpoint(checkpoint, trainer, run, audit)
         write_json(directory / "run.json", {
             "schema_version": 1, "status": "running", "counters": trainer.counters, "run": run,
         })
         while trainer.phase_updates < stop:
-            trainer.step(objective)
-            save_checkpoint(checkpoint, {**trainer.snapshot(), "run": run})
+            wall, cpu = perf_counter(), process_time()
+            trace = trainer.step(objective)
+            if audit is not None:
+                record_update(
+                    audit, trace, detector_tokens=objective.detector_tokens(trace.cores, trace.buffers),
+                    wall=perf_counter() - wall, cpu=process_time() - cpu,
+                    rss=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+                    allocated_cpus=config.runtime.allocated_cpus,
+                )
+            _save_training_checkpoint(checkpoint, trainer, run, audit)
+        if validation is not None and trainer.complete and audit["validation"] is None:
+            audit["validation"] = _terminal_validation(trainer, objective, validation)
+            _save_training_checkpoint(checkpoint, trainer, run, audit)
         write_json(directory / "run.json", {
             "schema_version": 1, "status": "complete" if trainer.complete else "paused",
             "counters": trainer.counters, "checkpoint": file_integrity(checkpoint), "run": run,
+            **({"continuation_audit": audit} if audit is not None else {}),
         })
     return checkpoint
+
+
+def _save_training_checkpoint(checkpoint: Path, trainer, run: dict, audit: dict | None) -> None:
+    from .checkpoints import save_checkpoint
+
+    state = {**trainer.snapshot(), "run": run}
+    if audit is not None:
+        state["continuation_audit"] = audit
+    save_checkpoint(checkpoint, state)
