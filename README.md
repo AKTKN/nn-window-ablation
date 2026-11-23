@@ -125,6 +125,10 @@ Saved-data training can use a synchronous Linux CPU/Gloo group with
 `training.batch_size` counts trajectories across the whole group.
 [CPU DDP example and verification](docs/verification/cpu_ddp_training.md)
 
+Use `data.sampling_processes` to select a bounded sampler pool for saved
+training, validation, or test data. Worker count preserves the sampling
+recipe and shard contents. [Four-command multicore walkthrough](docs/GETTING_STARTED.md#run-all-four-saved-data-commands-on-four-cpus)
+
 ## Evaluate and analyze paired trajectories
 
 Continue in the same scratch directory using the dataset and terminal

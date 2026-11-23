@@ -1,4 +1,4 @@
-"""Bounded per-update measurements shared by training and checkpoint writes."""
+"""Process-local timing spans for numerical work and artifact publication."""
 
 from contextlib import contextmanager
 from contextvars import ContextVar

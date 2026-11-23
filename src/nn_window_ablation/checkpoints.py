@@ -13,7 +13,7 @@ import torch
 from .artifacts import ArtifactError, atomic_file, canonical_json
 from .models.gnn_rnn import QueryDecoder
 from .training import distributed_state, final_update_count
-from .training_telemetry import span
+from .timing import span
 
 
 CHECKPOINT_SCHEMA = 1

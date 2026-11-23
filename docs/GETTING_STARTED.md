@@ -98,6 +98,44 @@ Resume with the same layout and `checkpoint.resume_from=runs/stored-ddp/checkpoi
 Use the finished checkpoint with either inline or parallel evaluation.
 [CPU DDP execution and replay](verification/cpu_ddp_training.md)
 
+### Run all four saved-data commands on four CPUs
+
+Run these commands in a scratch directory with the thread exports above.
+Use the same data root throughout. The generation shard size is part of
+the dataset identity.
+
+```bash
+four=(runtime=local_cpu runtime.allocated_cpus=4)
+samplers=(data.sampling_processes=4 data.sampling_max_in_flight=8)
+nnwa generate "${four[@]}" "${samplers[@]}" data.split=train data.id=parallel-base \
+  data.shots=16 data.shard_shots=4
+nnwa train "${four[@]}" runtime.processes=4 training.execution=ddp \
+  run_name=multicore-base data.train_source=stored_shards data.id=parallel-base \
+  training.max_steps=2 training.batch_size=8 training.microbatch_size=1 \
+  training.optimizer=adam training.learning_rate=0.001 training.scheduler=none
+nnwa generate "${four[@]}" "${samplers[@]}" data.split=test data.id=parallel-held \
+  data.shots=17 data.shard_shots=4
+nnwa evaluate "${four[@]}" evaluation=paired evaluation.workers=4 \
+  run_name=multicore-paired data.id=parallel-held checkpoint.path=runs/multicore-base/checkpoint.pt
+```
+
+Generate the continuation source once and point all three continuation
+presets at that source. Validation and test use separate splits.
+
+```bash
+nnwa generate "${four[@]}" "${samplers[@]}" training=continued_full \
+  data.split=train data.id=parallel-continuation data.shots=16 data.shard_shots=4
+nnwa generate "${four[@]}" "${samplers[@]}" data.split=validation data.id=parallel-validation \
+  data.shots=4 data.shard_shots=2
+for arm in continued_full fixed_window dynamic_window; do
+  nnwa train "${four[@]}" runtime.processes=4 training.execution=ddp \
+    training="$arm" run_name="$arm" data.train_source=stored_shards data.id=parallel-continuation \
+    checkpoint.init_from=runs/multicore-base/checkpoint.pt training.validation_data_id=parallel-validation \
+    training.max_steps=2 training.batch_size=8 training.microbatch_size=1 \
+    training.optimizer=adam training.learning_rate=0.001 training.scheduler=none
+done
+```
+
 ## 3. Evaluate one checkpoint three ways
 
 ```bash

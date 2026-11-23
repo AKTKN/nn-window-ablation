@@ -8,6 +8,8 @@ import numpy as np
 from numpy.typing import NDArray
 import stim
 
+from .timing import span
+
 
 @dataclass(frozen=True, slots=True)
 class CircuitSpec:
@@ -278,16 +280,19 @@ def sample_shots(
     if type(first_shot_id) is not int or not 0 <= first_shot_id <= 2**63 - shots:
         raise ValueError("shot IDs must fit in the nonnegative int64 range")
 
-    sampler = bundle.teacher.to_stim().compile_detector_sampler(seed=seed)
-    detectors, observables = sampler.sample(shots, separate_observables=True)
+    with span("sampler_compile"):
+        sampler = bundle.teacher.to_stim().compile_detector_sampler(seed=seed)
+    with span("stim_sample"):
+        detectors, observables = sampler.sample(shots, separate_observables=True)
     if detectors.shape != (shots, len(bundle.detectors)) or observables.shape != (shots, len(bundle.cores)):
         raise ValueError("sampled columns do not match the circuit bundle")
 
-    global_labels = observables[:, 0].copy()
-    snapshots = observables[:, 1:]
-    core_labels = np.empty_like(observables)
-    core_labels[:, :-1] = snapshots
-    core_labels[:, -1] = global_labels
-    core_labels[:, 1:] ^= snapshots
-    shot_ids = np.arange(shots, dtype=np.int64) + first_shot_id
-    return ShotBatch(detectors, global_labels, core_labels, shot_ids, snapshots.copy() if include_snapshots else None)
+    with span("labels_and_ids"):
+        global_labels = observables[:, 0].copy()
+        snapshots = observables[:, 1:]
+        core_labels = np.empty_like(observables)
+        core_labels[:, :-1] = snapshots
+        core_labels[:, -1] = global_labels
+        core_labels[:, 1:] ^= snapshots
+        shot_ids = np.arange(shots, dtype=np.int64) + first_shot_id
+        return ShotBatch(detectors, global_labels, core_labels, shot_ids, snapshots.copy() if include_snapshots else None)

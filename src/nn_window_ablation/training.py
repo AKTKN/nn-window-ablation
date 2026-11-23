@@ -21,7 +21,7 @@ from .models.gnn_rnn import QueryDecoder, prepare_model_batch
 from .models.objective import query_loss, sample_core_indices
 from .simulation import CircuitBundle, ShotBatch
 from .streams import ChunkCursor, TrajectoryStream
-from .training_telemetry import span
+from .timing import span
 from .windows import Buffers, WindowView, build_observation_layout, crop_observations, select_window
 
 

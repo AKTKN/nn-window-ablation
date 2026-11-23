@@ -12,7 +12,7 @@ from .artifacts import ArtifactError, canonical_json
 from .continuation import model_tensors_sha256
 from .streams import ChunkCursor
 from .training import DISTRIBUTED_STATE_SCHEMA, Trainer, distributed_state
-from .training_telemetry import span
+from .timing import span
 
 
 class TrainingGroup:

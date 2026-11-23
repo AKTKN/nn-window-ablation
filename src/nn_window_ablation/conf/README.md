@@ -67,6 +67,17 @@ worker. A single sampler runs inline. `runtime.configure_cpu_runtime` checks
 the declaration and process affinity before applying native and PyTorch thread
 settings. `validate` records the plan without starting numerical execution.
 
+For persisted generation, `data.sampling_processes` is the number of
+single-threaded Stim sampler workers. It defaults to one inline sampler.
+Parallel generation uses `runtime.processes=1`, one intra-op and inter-op
+thread in the runtime preset, and `data.num_workers=0`. The allocation
+must cover the requested sampler workers. The coordinator shares a CPU
+when the allocation is fully used. `data.sampling_max_in_flight` sets a
+positive outstanding-shard limit and defaults to twice the worker count
+in the pool. Serial generation permits one outstanding shard. Each
+worker uses one native thread and one sampler seed per shard.
+[Generation and publication contract](../../../docs/verification/parallel_generation.md)
+
 Set `NNWA_DATA_ROOT` and `NNWA_RUN_ROOT` or override their `paths.*` fields.
 The fallback paths are `./data` and `./runs`. Storage and checkpoint paths are
 resolved against the invocation directory before publishing records.

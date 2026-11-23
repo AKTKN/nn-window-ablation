@@ -11,15 +11,13 @@ from time import perf_counter
 from typing import TYPE_CHECKING
 from uuid import uuid4
 import csv
-import fcntl
 import os
 import re
-import shutil
 import sys
 
 from .artifacts import (
     ArtifactError, _sync_directory, atomic_file, canonical_json, exclusive_lock, file_integrity, publish_directory,
-    read_json, read_json_artifact, staged_directory, verify_file, write_json,
+    read_json, read_json_artifact, retire_staging, staged_directory, verify_file, write_json,
 )
 from .config import (
     ConfigError, ResolvedConfig, evaluation_worker_threads, require_execution_config, validate_evaluation_budget,
@@ -571,25 +569,8 @@ def _task_staging(root: Path, attempt: str):
     try:
         yield stage
     finally:
-        _retire_staging(stage)
+        retire_staging(stage, "evaluation")
         root.rmdir()
-
-
-def _retire_staging(stage: Path) -> None:
-    lease = stage / "writers.lock"
-    if lease.is_symlink() or (lease.exists() and not lease.is_file()):
-        raise ArtifactError("invalid evaluation worker lease")
-    if not lease.exists():
-        # A coordinator can die before creating the lease or while retiring
-        # an already quiescent attempt. No worker opens the lease with O_CREAT.
-        shutil.rmtree(stage)
-        return
-    with lease.open("rb") as file:
-        try:
-            fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ArtifactError(f"evaluation attempt {stage.name} still has live writers; resume after they exit") from exc
-        shutil.rmtree(stage)
 
 
 def _clean_staging(root: Path) -> None:
@@ -599,7 +580,7 @@ def _clean_staging(root: Path) -> None:
         for stage in root.iterdir():
             if not re.fullmatch(r"[a-f0-9]{32}", stage.name) or stage.is_symlink() or not stage.is_dir():
                 raise ArtifactError("invalid evaluation staging attempt")
-            _retire_staging(stage)
+            retire_staging(stage, "evaluation")
         root.rmdir()
 
 

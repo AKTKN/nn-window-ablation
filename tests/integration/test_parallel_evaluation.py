@@ -357,3 +357,38 @@ def test_spawned_evaluation_rejects_bad_receipts_and_task_failures(tmp_path, con
         started, = _events(events, "task_start")
         assert not failed["dataset_active"]
         assert failed["process"]["fd_count"] == started["process"]["fd_count"]
+
+
+def test_real_distance_five_out_of_order_recovery_on_saved_shards(tmp_path, compose_settings):
+    resolve, preset, args, held = _inputs(tmp_path, compose_settings, genuine=True)
+    reference = workflows.evaluate_workflow(resolve(*args("reference", 1)))
+    root = tmp_path / "runs/recovery"
+    barrier = root / "test-barriers"
+    repo = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "NNWA_TEST_BEHAVIOR": "pause", "NNWA_TEST_REAL_EVALUATOR": "1", "PYTHONPATH": str(repo)}
+    with _reap_adopted_processes(), (tmp_path / "recovery.log").open("w+") as output:
+        child = subprocess.Popen(
+            [sys.executable, "-m", "tests.parallel_evaluation_checks", "evaluate", *preset,
+             *args("recovery", 2, "evaluation.max_in_flight=2")],
+            cwd=tmp_path, env=env, stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+        try:
+            await_file(barrier / "started-2", timeout=60)
+            assert {path.name for path in (root / "shards").iterdir()} == {"1"}
+            receipt = file_integrity(root / "shards/1/receipt.json")
+            child.kill()
+            assert child.wait(timeout=15) < 0
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=15)
+            _reap_group(child.pid)
+    resumed = workflows.evaluate_workflow(resolve(*args("recovery", 3, resume=True)))
+    assert file_integrity(root / "shards/1/receipt.json") == receipt
+    assert read_json(reference)["shards"] == read_json(resumed)["shards"]
+    attempt = next(path for path in root.glob("attempts/*/coordinator.jsonl") if _lines(path)[0]["workers"] == 3)
+    assert [row["index"] for row in _events(_lines(attempt), "task_submitted")] == [0, 2, 3, 4]
+    expected = read_json(_report(resolve, reference, "expected"))
+    actual = read_json(_report(resolve, resumed, "recovered"))
+    for key in ("rates", "contrasts", "primary_decomposition"):
+        assert actual[key] == expected[key]

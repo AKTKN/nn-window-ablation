@@ -13,7 +13,7 @@ from .config import ConfigError, ResolvedConfig, require_execution_config, valid
 from .continuation import CONTINUATION_ARMS, TRAINING_REGIMES
 from .evaluation_pool import append_event, observe_process
 from .runtime import configure_cpu_runtime
-from .training_telemetry import capture_spans, span
+from .timing import capture_spans, span
 from .workflows import _environment_record, reserve_run_directory
 
 
@@ -22,7 +22,9 @@ def check_execution(command: str, config: ResolvedConfig) -> None:
     require_execution_config(config, command)
     data = config.data
     distributed = command == "train" and config.training.execution == "ddp"
-    if (data.num_workers, data.sampling_processes) != (0, 1) or not distributed and config.runtime.processes != 1:
+    if data.num_workers != 0 or (command != "generate" and data.sampling_processes != 1) or (
+        not distributed and config.runtime.processes != 1
+    ):
         raise ConfigError("execution requires zero loader workers and inline sampling; only DDP train accepts multiple processes")
     if data.split not in ("train", "validation", "test"):
         raise ConfigError("data.split must be train, validation, or test")
@@ -36,6 +38,10 @@ def check_execution(command: str, config: ResolvedConfig) -> None:
     if data.split == "train" and training.data_stream_phase not in ("base", "continuation"):
         raise ConfigError("a training stream requires base or continuation phase")
     if command == "generate":
+        if data.sampling_processes > 1 and (config.runtime.intraop_threads, config.runtime.interop_threads) != (1, 1):
+            raise ConfigError("parallel generation requires one intra-op and inter-op thread in the runtime preset")
+        if data.sampling_processes == 1 and data.sampling_max_in_flight not in (None, 1):
+            raise ConfigError("serial generation permits one in-flight shard")
         return
     if data.split != "train":
         raise ConfigError("optimization requires data.split=train")
@@ -123,19 +129,15 @@ def _circuit_and_namespace(config: ResolvedConfig):
 
 def generate_workflow(config: ResolvedConfig, *, overrides: tuple[str, ...] = ()) -> Path:
     check_execution("generate", config)
-    configure_cpu_runtime(config.runtime, config.data)
-    from .data import SamplingPlan, write_dataset
-    from .runtime import runtime_observation
+    from .runtime import native_thread_limits, reject_excessive_native_threads
 
-    bundle, namespace = _circuit_and_namespace(config)
-    plan = SamplingPlan.from_circuit(bundle, namespace, chunk_rows=config.data.shard_shots, total_rows=config.data.shots)
-    config.paths.data_root.mkdir(parents=True, exist_ok=True)
-    path = config.paths.data_root / (config.data.id or plan.dataset_id)
-    write_dataset(path, plan, bundle, provenance={
-        "command": "generate", "resolved_config": config.to_record(), "overrides": list(overrides),
-        "environment": _environment_record(), "runtime": runtime_observation(config.data),
-    })
-    return path / "manifest.json"
+    started = perf_counter()
+    if config.data.sampling_processes > 1:
+        reject_excessive_native_threads(1, "generation sampler")
+    with native_thread_limits(1):
+        from .generation import generate_saved_dataset
+
+        return generate_saved_dataset(config, overrides, started)
 
 
 def _training_stream(config: ResolvedConfig):
@@ -217,6 +219,7 @@ def _resume_contract(record: dict) -> dict:
     training = record["training"]
     return {
         **record, "checkpoint": {**record["checkpoint"], "resume_from": None, "init_from": None},
+        "data": {key: value for key, value in record["data"].items() if key != "sampling_max_in_flight"},
         "training": training if training.get("execution") == "ddp" else {
             key: value for key, value in training.items() if key not in ("execution", "ddp_timeout_seconds")
         },

@@ -63,3 +63,20 @@ and optional checkpoint; compress on the cluster and transfer with `scp`.
    https://docs.pytorch.org/docs/2.7/notes/multiprocessing.html#cpu-in-multiprocessing
 4. Hydra 1.3, multirun.
    https://hydra.cc/docs/1.3/tutorials/basic/running_your_app/multi-run/
+# Local multicore audit
+
+Run the saved-data audit from the repository root in the documented Conda
+environment. Use a new output directory outside tracked source. The driver
+uses the effective Linux affinity, records the chosen logical CPUs, and
+runs each stage sequentially.
+
+```bash
+conda run --no-capture-output -n nn_window_decoding \
+  python -m scripts.local_multicore_audit ../nnwa-local-evidence/local-multicore-audit-new
+```
+
+The recipe is `scripts/local_multicore_audit.json`. The output keeps exact
+installed-command arguments, per-process timelines, artifacts, verification
+results, and plots. `--summarize-only` reads an existing completed audit
+inventory and repeats its readback and reporting.
+[Audit measurements and methods](../docs/verification/local_multicore_audit.md)

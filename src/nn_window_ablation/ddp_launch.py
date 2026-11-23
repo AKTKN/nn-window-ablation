@@ -13,31 +13,7 @@ import traceback
 from .artifacts import ArtifactError
 from .config import ConfigError, ResolvedConfig, validate_cpu_budget
 from .evaluation_pool import bind_to_parent, cpu_affinity, stop_on_signal
-from .runtime import configure_cpu_runtime, native_thread_limits, reject_excessive_native_threads
-
-
-def _cpu_quota() -> float | None:
-    """Return the tightest visible cgroup-v2 CPU bandwidth quota, in CPUs."""
-    mount = Path("/sys/fs/cgroup")
-    try:
-        name = next(
-            line.removeprefix("0::").lstrip("/")
-            for line in Path("/proc/self/cgroup").read_text().splitlines() if line.startswith("0::")
-        )
-    except (OSError, StopIteration):
-        return None
-    quotas = []
-    path = mount / name
-    for directory in (path, *path.parents):
-        if not directory.is_relative_to(mount):
-            break
-        try:
-            limit, period = (directory / "cpu.max").read_text().split()
-        except (OSError, ValueError):
-            continue
-        if limit.isdecimal() and period.isdecimal() and int(period) > 0:
-            quotas.append(int(limit) / int(period))
-    return min(quotas, default=None)
+from .runtime import _cpu_quota, configure_cpu_runtime, native_thread_limits, reject_excessive_native_threads
 
 
 def training_placement(config: ResolvedConfig) -> tuple[tuple[int, ...], ...]:

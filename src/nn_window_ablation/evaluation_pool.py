@@ -157,7 +157,7 @@ def _finish_pool(pool: ProcessPoolExecutor, *, abort: bool) -> None:
 
 def run_pool(
     tasks, *, slots, threads, limit, lease, log_dir, initialize, initializer_args, work,
-    check_stop, on_submit, on_result,
+    check_stop, on_submit, on_result, operation="evaluation",
 ) -> None:
     """Own at most limit futures through coordinator verification and commit."""
     context = mp.get_context("spawn")
@@ -177,7 +177,7 @@ def run_pool(
         try:
             future = pool.submit(work, task)
         except Exception as exc:
-            raise ArtifactError(f"could not submit evaluation task {task}: {exc}") from exc
+            raise ArtifactError(f"could not submit {operation} task {task}: {exc}") from exc
         pending[future] = (task, submitted)
         on_submit(task, len(pending))
         return True
@@ -202,10 +202,10 @@ def run_pool(
                     except BrokenProcessPool as exc:
                         outstanding = sorted([task.index, *(item.index for item, _ in pending.values())])
                         raise ArtifactError(
-                            f"evaluation pool failed with {task} and outstanding shard indices {outstanding}: {exc}"
+                            f"{operation} pool failed with {task} and outstanding shard indices {outstanding}: {exc}"
                         ) from exc
                     except Exception as exc:
-                        raise ArtifactError(f"evaluation task {task} failed: {exc}") from exc
+                        raise ArtifactError(f"{operation} task {task} failed: {exc}") from exc
                     on_result(task, result, submitted, len(pending) + 1)
                     del result, future
                     submit_next()

@@ -12,6 +12,8 @@ import numpy as np
 from numpy.typing import NDArray
 import stim
 
+from .timing import span
+
 from .artifacts import (
     ArtifactError, atomic_file, canonical_json, file_integrity, read_json, read_json_artifact, staged_directory, verify_file, write_json,
 )
@@ -198,22 +200,28 @@ def _shard_identity(plan: SamplingPlan, index: int) -> dict:
 
 
 def _write_shard(root: Path, plan: SamplingPlan, index: int, shots: ShotBatch) -> dict:
-    _validate_shots(plan, index, shots)
+    with span("validate_rows"):
+        _validate_shots(plan, index, shots)
     with staged_directory(root) as staging:
         records = {}
         for role, width in _bit_widths(plan).items():
             array = getattr(shots, role)
             if width is not None:
-                array = np.packbits(array.reshape(len(shots.shot_ids), width), axis=1, bitorder=BITORDER)
+                with span("pack"):
+                    array = np.packbits(array.reshape(len(shots.shot_ids), width), axis=1, bitorder=BITORDER)
             path = staging / ARRAY_FILES[role]
-            with atomic_file(path) as file:
+            with span("write_payload"), atomic_file(path) as file:
                 np.save(file, array, allow_pickle=False)
+            with span("checksum"):
+                receipt = file_integrity(path)
             records[role] = {
-                **file_integrity(path), "role": role, "filename": path.name, "dtype": array.dtype.name,
+                **receipt, "role": role, "filename": path.name, "dtype": array.dtype.name,
                 "shape": list(array.shape), "valid_bits": width,
             }
-        write_json(staging / "shard.json", {**_shard_identity(plan, index), "arrays": records})
-    return {"index": index, "manifest": file_integrity(root / "shard.json")}
+        with span("write_shard_manifest"):
+            write_json(staging / "shard.json", {**_shard_identity(plan, index), "arrays": records})
+    with span("checksum"):
+        return {"index": index, "manifest": file_integrity(root / "shard.json")}
 
 
 def _write_physical(root: Path, bundle: CircuitBundle) -> dict:
@@ -254,10 +262,14 @@ def write_dataset(
             inventory.append(_write_shard(staging / "shards" / str(index), plan, index, shots))
         if next(input_batches, None) is not None:
             raise ArtifactError("extra shards beyond the declared dataset")
-        write_json(staging / "manifest.json", {
-            "schema_version": DATASET_SCHEMA, "status": "complete", "dataset_id": plan.dataset_id,
-            "recipe": plan.record(), "physical": physical, "shards": inventory, "provenance": provenance,
-        })
+        _write_dataset_manifest(staging, plan, physical, inventory, provenance)
+
+
+def _write_dataset_manifest(staging: Path, plan: SamplingPlan, physical: dict, inventory: list[dict], provenance: dict):
+    write_json(staging / "manifest.json", {
+        "schema_version": DATASET_SCHEMA, "status": "complete", "dataset_id": plan.dataset_id,
+        "recipe": plan.record(), "physical": physical, "shards": inventory, "provenance": provenance,
+    })
 
 
 @dataclass(frozen=True, slots=True)

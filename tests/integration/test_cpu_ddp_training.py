@@ -189,7 +189,7 @@ def _exact_replay(expected, actual):
 
 
 def test_same_topology_pause_and_abrupt_rank_death_replay(tmp_path, compose_settings, monkeypatch):
-    resolved = _settings(tmp_path, compose_settings, distance=3)
+    resolved = _settings(tmp_path, compose_settings)
     _stored_inputs(resolved, total=16)
     monkeypatch.setattr(ddp_launch, "_rank_train", recovery_rank)
     reference = load_checkpoint(execution.train_workflow(resolved(*_options("reference", 2, steps=4))))
@@ -209,7 +209,7 @@ def test_same_topology_pause_and_abrupt_rank_death_replay(tmp_path, compose_sett
     env = {**os.environ, "PYTHONPATH": str(repo), "NNWA_DDP_TEST_FAULT": "pause"}
     with _reap_adopted_processes(), (tmp_path / "crash.log").open("w+") as output:
         child = subprocess.Popen(
-            [sys.executable, "-m", "tests.ddp_checks", "train", "runtime=test_cpu", "code.distance=3",
+            [sys.executable, "-m", "tests.ddp_checks", "train", "runtime=test_cpu", "code.distance=5",
              *_options("crashed", 2, steps=4)],
             cwd=tmp_path, env=env, stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
         )

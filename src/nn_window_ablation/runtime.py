@@ -2,6 +2,7 @@
 
 import os
 from contextlib import contextmanager
+from pathlib import Path
 
 from .config import ConfigError, DataConfig, RuntimeConfig, validate_cpu_budget
 
@@ -73,3 +74,27 @@ def configure_cpu_runtime(runtime: RuntimeConfig, data: DataConfig) -> None:
             ) from exc
     if torch.get_num_threads() != runtime.intraop_threads:
         torch.set_num_threads(runtime.intraop_threads)
+
+
+def _cpu_quota() -> float | None:
+    """Return the tightest visible cgroup-v2 CPU bandwidth quota, in CPUs."""
+    mount = Path("/sys/fs/cgroup")
+    try:
+        name = next(
+            line.removeprefix("0::").lstrip("/")
+            for line in Path("/proc/self/cgroup").read_text().splitlines() if line.startswith("0::")
+        )
+    except (OSError, StopIteration):
+        return None
+    quotas = []
+    path = mount / name
+    for directory in (path, *path.parents):
+        if not directory.is_relative_to(mount):
+            break
+        try:
+            limit, period = (directory / "cpu.max").read_text().split()
+        except (OSError, ValueError):
+            continue
+        if limit.isdecimal() and period.isdecimal() and int(period) > 0:
+            quotas.append(int(limit) / int(period))
+    return min(quotas, default=None)

@@ -6,6 +6,7 @@ import fcntl
 from hashlib import sha256
 import json
 import os
+import shutil
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import BinaryIO
@@ -110,3 +111,20 @@ def publish_directory(staging: Path, path: Path) -> None:
         raise FileExistsError(path)
     os.rename(staging, path)
     _sync_directory(path.parent)
+
+
+def retire_staging(stage: Path, operation: str) -> None:
+    lease = stage / "writers.lock"
+    if lease.is_symlink() or (lease.exists() and not lease.is_file()):
+        raise ArtifactError(f"invalid {operation} worker lease")
+    if not lease.exists():
+        # A coordinator can die before creating the lease or while retiring
+        # an already quiescent attempt. No worker opens the lease with O_CREAT.
+        shutil.rmtree(stage)
+        return
+    with lease.open("rb") as file:
+        try:
+            fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ArtifactError(f"{operation} attempt {stage.name} still has live writers; retry after they exit") from exc
+        shutil.rmtree(stage)

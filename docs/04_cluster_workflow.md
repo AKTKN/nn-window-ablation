@@ -153,6 +153,12 @@ inside a rank. Use the same rank count and numerical settings for resume.
 The receipt verifies the completed checkpoint's topology. Compute-node
 Gloo and filesystem checks are pending. [CPU DDP execution](verification/cpu_ddp_training.md)
 
+For parallel generation, set `threads` to one and include
+`data.sampling_processes=N` in the `generate` overrides. Request at least
+`N` CPUs and keep `runtime.processes=1`. Leave the shard size fixed when
+comparing worker layouts. PBS verifies the completed dataset and the
+sampler layout in its provenance. [Parallel generation](verification/parallel_generation.md)
+
 ## 4. Validate and run on an allocated node
 
 Set the installed `qsub` and `qstat` paths and submit the probe first.

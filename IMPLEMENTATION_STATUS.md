@@ -21,6 +21,8 @@ Multicore Phase 2 adds a bounded Linux spawn pool for frozen, saved-shot
 evaluation and verified resume across worker counts.
 Multicore Phase 3 adds synchronous CPU/Gloo training on saved shards with
 a global update budget and same-topology checkpoint replay.
+Multicore Phase 4 adds deterministic, bounded Stim generation for persisted
+training, validation and test shards.
 
 ## GitHub publication
 
@@ -55,6 +57,28 @@ not a required training stage or the pilot.
 
 ## Validation record
 
+### Multicore Phase 4
+
+The generation checks passed in the cumulative suites of 322 ordinary and
+32 process-resource tests. The distance-5 generator produced identical
+scientific payloads in the one-, two-, and four-worker layouts. Writer and
+coordinator termination left no partial complete dataset, and retry produced
+the reference payloads. The suites also exercised distance-5 DDP replay and
+out-of-order evaluation recovery under the current package source.
+[Parallel generation verification](docs/verification/parallel_generation.md)
+
+### Final local multicore audit
+
+Both four-command saved-data chains completed at each of 2, 4 and 8 CPUs.
+All 57 measured production commands exited successfully, including frozen
+G/F/S controls, compact archive reanalysis, and matched S+/W/D continuation.
+Generation and fixed-checkpoint inference matched across layouts. The
+eight-thread serial training comparison was omitted in both repetitions at
+the user's request because it would reproduce the Phase 3 discrepancy.
+Eight-rank training met the numerical tolerances against the same-thread
+two-rank reference. Allocated-node and 96-CPU validation remain pending.
+[Local multicore audit](docs/verification/local_multicore_audit.md)
+
 ### Multicore Phase 3
 
 The CPU/Gloo training checks passed 304 ordinary tests and 23 resource
@@ -71,8 +95,7 @@ at one GRU coefficient, which also differed in the pre-DDP serial thread
 comparison. A one-thread diagnostic matched the eight-rank weights and
 moments within the unchanged tolerances and traced the outlier to the first
 Adam update under different thread counts. The raw timing, process-tree
-memory, and I/O records were retained. Compute-node validation and the full
-multicore audit after parallel generation remain pending.
+memory, and I/O records were retained. Compute-node validation remains pending.
 [CPU DDP verification](docs/verification/cpu_ddp_training.md)
 
 ### Multicore Phase 2
@@ -84,8 +107,7 @@ Process interruption checks preserved out-of-order commits and resumed
 with a different worker count. Completed and resumed predictions passed
 whole-trajectory analysis, compact export/reanalysis, and PBS artifact checks.
 The smoke retained startup-inclusive timing, sampled process-tree RSS,
-I/O and attempt records. Compute-node checks and the required multicore
-audit after the next two implementation phases remain pending.
+I/O and attempt records. Compute-node checks remain pending.
 [Parallel evaluation verification](docs/verification/parallel_evaluation.md)
 
 ### Reliability update

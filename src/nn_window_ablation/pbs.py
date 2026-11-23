@@ -325,6 +325,12 @@ def _verified_artifact(job: JobSpec, config, path: Path) -> tuple[dict, dict]:
         if mapped.plan.total_rows != config.data.shots or provenance["resolved_config"] != config.to_record():
             raise ArtifactError("generation did not publish the expected dataset")
         actual = provenance["runtime"]
+        if "sampling_threads" in actual:
+            if (actual["sampling_threads"], actual["sampling_processes"], actual["data_loader_workers"]) != (
+                1, config.data.sampling_processes, 0,
+            ):
+                raise ArtifactError("generation artifact does not match the planned sampler layout")
+            return {"path": str(path), **file_integrity(path)}, actual
     elif job.stage == "evaluate":
         from .paired_workflows import _dataset, _evaluation_request, _read_manifest, _read_shard, _verify_commit
 

@@ -133,7 +133,8 @@ def controlled_task(task):
 def main():
     from nn_window_ablation.cli import main as nnwa_main
 
-    workflows._initialize_evaluation_worker = controlled_initialize
+    if os.environ.get("NNWA_TEST_REAL_EVALUATOR") != "1":
+        workflows._initialize_evaluation_worker = controlled_initialize
     # Keep a reference to the production wrapper so the injected wrapper can call it.
     workflows._run_worker_task = controlled_task
     return nnwa_main()

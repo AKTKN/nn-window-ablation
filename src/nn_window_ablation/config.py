@@ -107,6 +107,7 @@ class DataConfig:
     bitorder: str
     keep_zero_event_shots: bool
     label_schema: str
+    sampling_max_in_flight: int | None = None
 
 
 @dataclass
@@ -265,7 +266,10 @@ def resolve_config(config: DictConfig, *, invocation_dir: Path) -> ResolvedConfi
         for group, names in {
             "code": ("distance", "rounds_per_distance"),
             "runtime": ("processes", "intraop_threads", "interop_threads", "allocated_cpus"),
-            "data": ("replicate", "num_workers", "sampling_processes", "shots", "shard_shots", "training_chunk_shots"),
+            "data": (
+                "replicate", "num_workers", "sampling_processes", "sampling_max_in_flight", "shots", "shard_shots",
+                "training_chunk_shots",
+            ),
             "training": ("max_steps", "batch_size", "microbatch_size", "scheduler_step_size", "ddp_timeout_seconds"),
             "evaluation": ("batch_size", "workers", "worker_threads", "max_in_flight"),
             "analysis": ("bootstrap_replicates", "bootstrap_seed", "sparse_rule", "ratio_min_denominator_failures"),
@@ -362,6 +366,7 @@ def _validate_budgets(config: ResolvedConfig) -> None:
     for name, value in (
         ("data.shots", config.data.shots),
         ("data.shard_shots", config.data.shard_shots),
+        ("data.sampling_max_in_flight", config.data.sampling_max_in_flight),
         ("data.training_chunk_shots", config.data.training_chunk_shots),
         ("training.max_steps", config.training.max_steps),
         ("training.batch_size", config.training.batch_size),
@@ -407,7 +412,12 @@ def validate_cpu_budget(runtime: RuntimeConfig, data: DataConfig) -> int:
     # A single sampler runs inline. Parallel sampler and loader workers get one CPU each.
     sampler_workers = data.sampling_processes if data.sampling_processes > 1 else 0
     per_process = runtime.intraop_threads * runtime.interop_threads + data.num_workers + sampler_workers
-    required = runtime.processes * per_process
+    # Persisted generation uses one thread per sampler and shares the
+    # allocation with its one-thread coordinator.
+    standalone_pool = sampler_workers and (
+        runtime.processes, runtime.intraop_threads, runtime.interop_threads, data.num_workers
+    ) == (1, 1, 1, 0)
+    required = sampler_workers if standalone_pool else runtime.processes * per_process
     if runtime.allocated_cpus is not None:
         if runtime.allocated_cpus < 1:
             raise ConfigError("runtime.allocated_cpus must be positive")
