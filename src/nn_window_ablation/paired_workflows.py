@@ -16,8 +16,8 @@ import re
 import sys
 
 from .artifacts import (
-    ArtifactError, _sync_directory, atomic_file, canonical_json, exclusive_lock, file_integrity, publish_directory,
-    read_json, read_json_artifact, retire_staging, staged_directory, verify_file, write_json,
+    ArtifactError, _sync_directory, atomic_file, canonical_json, create_writer_lease, exclusive_lock, file_integrity,
+    publish_directory, read_json, read_json_artifact, retire_staging, staged_directory, verify_file, write_json,
 )
 from .config import (
     ConfigError, ResolvedConfig, evaluation_worker_threads, require_execution_config, validate_evaluation_budget,
@@ -467,7 +467,7 @@ def _run_evaluation(config, overrides, sweep_index, started, threads, slots, coo
                 inventory[index] = entry
             append_event(log, "verified_commits", count=len(inventory), wall_seconds=perf_counter() - verify_started)
             if len(inventory) < len(mapped.shards):
-                with _task_staging(staging_root, attempt) as stage:
+                with _task_staging(staging_root, log_dir) as stage:
                     inline_start = perf_counter()
                     runner = None if slots else _build_task_runner(
                         config, mapped, model_payload, buffers, dem, modes, conditions, digest, stage, log,
@@ -561,15 +561,15 @@ def _evaluate_missing(
 
 
 @contextmanager
-def _task_staging(root: Path, attempt: str):
+def _task_staging(root: Path, log_dir: Path):
     root.mkdir(exist_ok=True)
-    stage = root / attempt
+    stage = root / log_dir.name
     stage.mkdir()
-    (stage / "writers.lock").touch(exist_ok=False)
+    create_writer_lease(stage, log_dir.name)
     try:
         yield stage
     finally:
-        retire_staging(stage, "evaluation")
+        retire_staging(stage, "evaluation", log_dir / "writers.lock")
         root.rmdir()
 
 
@@ -580,7 +580,7 @@ def _clean_staging(root: Path) -> None:
         for stage in root.iterdir():
             if not re.fullmatch(r"[a-f0-9]{32}", stage.name) or stage.is_symlink() or not stage.is_dir():
                 raise ArtifactError("invalid evaluation staging attempt")
-            retire_staging(stage, "evaluation")
+            retire_staging(stage, "evaluation", root.parent / "attempts" / stage.name / "writers.lock")
         root.rmdir()
 
 

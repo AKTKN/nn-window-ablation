@@ -366,10 +366,58 @@ The leading explanation is NFS silly-renaming of the open lease during removal.
 The login host sees `/home` on XFS and exports it over NFS to the compute-node
 network in `/etc/exports`. The compute-node mount and failure-time `.nfs*`
 entry have not been observed directly: read-only SSH to CPUcluster041, where
-the user's job 264508 is running, failed authentication. No diagnostic job was
+the user's job 264508 is running, failed authentication. At that point no diagnostic job had been
 submitted, reproduction executed, or cleanup implementation changed. A fix
 must preserve worker exclusion while removing the open lease from the directory
 being deleted, and needs verification on an allocated compute node.
+
+### Local reproduction and fix
+
+On 2026-11-23 the unmodified retirement function from `0765203` was run on
+real loopback NFS mounts in an isolated QEMU Linux guest (kernel
+`6.18.58.1-microsoft-standard-WSL2`, an ext4 export and the
+`nn_window_decoding` Python 3.11 interpreter). A probe inspected the staging directory
+on the failing `rmtree` call while the caller still held the lease.
+
+| Client mount | Original result | Fixed result |
+|---|---|---|
+| NFSv3, TCP, `nolock,local_lock=all` | `ENOTEMPTY` (39). The directory contained `.nfs000000000000000d00000001` during the exception and was empty after close. | Five consecutive retirements passed. A held shared lease blocked retirement. |
+| NFSv4.1, TCP, `local_lock=none` | `EBADF` (9) while taking an exclusive lock on the read-only descriptor, before deletion. | Five consecutive retirements passed. A held shared lease blocked retirement. |
+
+On NFSv3, the real `nnwa generate` workflow ran inline and with a two-worker
+pool, in separate runs, for both train and test splits at distance five.
+Every three-shot, two-shard dataset passed full payload readback. The
+evaluation staging context removed its partial output and staging root on the
+same mount.
+
+The first case establishes a sufficient cause of the cluster symptom. The
+cluster's compute-node mount options remain unknown. The NFS client retains
+an unlinked open file under a temporary name until close. With remote NFS
+locking, the exclusive flock also needs a writable descriptor.
+[Linux NFS unlink implementation](https://github.com/torvalds/linux/blob/master/fs/nfs/unlink.c) ·
+[Linux flock manual](https://man7.org/linux/man-pages/man2/flock.2.html)
+
+The coordinator now takes the exclusive lease on a writable descriptor and
+renames the locked inode into the attempt log directory before removing the
+staging tree. Workers verify the attempt ID and lease inode after obtaining
+their shared lock. A quiescent legacy stage with an empty lease can be retired
+by the same cleanup path. The change affects saved-data generation and frozen
+evaluation. Training and analysis do not call this retirement function.
+
+In the local Conda environment, 337 ordinary tests passed with eight pytest
+workers and 34 process-resource tests passed with two. These included real
+generation and evaluation worker/coordinator termination and retry. The six
+focused [staging regression tests](tests/unit/test_staging_retirement.py)
+also passed separately. They exercise NFS-style open unlink, a live writer,
+a delayed initializer, interrupted retirement, missing old logs and
+preservation of an existing lease archive.
+
+With the original checkout and a simulated NFS unlink, a distance-5 CLI
+evaluation committed its two shards and failed before publishing the final
+manifest. Resuming with the original source and environment verified both
+shard receipts, kept their SHA-256 values, published the manifest and enabled
+paired analysis on all three shots. The cluster jobs and their artifacts were
+not modified.
 
 ## Decisions retained for the pilot
 

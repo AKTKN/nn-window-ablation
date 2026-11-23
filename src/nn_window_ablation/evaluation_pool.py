@@ -4,7 +4,6 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
 import ctypes
-import fcntl
 import multiprocessing as mp
 from multiprocessing.util import Finalize
 import os
@@ -14,7 +13,7 @@ import signal
 from threading import current_thread, main_thread
 from time import monotonic, perf_counter
 
-from .artifacts import ArtifactError, canonical_json
+from .artifacts import ArtifactError, canonical_json, open_writer_lease
 from .runtime import native_thread_limits
 
 
@@ -101,8 +100,7 @@ def _initialize(parent_pid, lease, log_dir, slots, next_slot, initialize, initia
     global _writer_lease
     start = perf_counter()
     bind_to_parent(parent_pid)
-    _writer_lease = lease.open("rb")
-    fcntl.flock(_writer_lease, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    _writer_lease = open_writer_lease(lease, log_dir.name)
 
     with next_slot.get_lock():
         affinity = slots[next_slot.value]

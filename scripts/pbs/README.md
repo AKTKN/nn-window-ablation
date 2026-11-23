@@ -55,6 +55,11 @@ qsub -v CONFIG_FILE=my-config/train.yaml scripts/pbs/train.sh
 
 ジョブから `conda` が見えないサイトでは、ログインノードの有効な環境で `qsub -v "CONDA_BASE=$(conda info --base),CONFIG_FILE=my-config/train.yaml" scripts/pbs/train.sh` とする。別名の環境を使う場合は `NNWA_CONDA_ENV` も `-v` で渡せる。学習再開は元のtrain YAMLの `checkpoint.resume_from` を元の `checkpoint.pt` に設定して同じrun名・ランク数で投入する。評価再開は元のevaluate YAMLを `evaluation.resume=true` に変更して同じrun名で投入する。
 
+### 旧版でステージング削除時に Errno 39 が出た場合
+
+- **データ生成**は `data/<data.id>/manifest.json` を公開してから一時領域を削除する。学習データのmanifestが既にある場合は `python -c 'from pathlib import Path; from nn_window_ablation.data import open_dataset; open_dataset(Path("data/train10m")).verify_payloads()'` で既存シャードを検証できる。検証を通ったデータはそのまま学習・評価で使える。
+- **評価**は一時領域を削除してから `runs/<run_name>/manifest.json` を公開する。全シャードがコミット済みで失敗後のステージングが空なら、**更新前の元のソース・環境**で同じrun名の `evaluation.resume=true` を実行すると、シャードを検証して最終manifestを作れる。すでに修正版へ切り替えて別のソースとして扱われる場合は、元のチェックポイントと評価データを使い、新しいrun名で評価できる。
+
 ## 解析だけ手元のPCで実行する
 
 評価ジョブが完了したら、`data/test10m/` と `runs/paired96/` をそれぞれ**ディレクトリごと**ローカルに転送する。既定と同じ配置なら、ローカルのリポジトリのルートで次を実行する。別の場所に転送した場合はコピーした共通YAMLの `paths.data_root` と `paths.run_root` を変更する。

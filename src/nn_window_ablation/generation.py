@@ -10,7 +10,9 @@ from uuid import uuid4
 
 import stim
 
-from .artifacts import ArtifactError, _sync_directory, exclusive_lock, publish_directory, retire_staging
+from .artifacts import (
+    ArtifactError, _sync_directory, create_writer_lease, exclusive_lock, publish_directory, retire_staging,
+)
 from .config import ConfigError, ResolvedConfig
 from .data import (
     ARRAY_FILES, OpenShard, SamplingPlan, _describe_shard, _write_dataset_manifest, _write_physical,
@@ -154,25 +156,25 @@ def _generation_slots(config: ResolvedConfig):
 
 
 @contextmanager
-def _owned_staging(directory: Path):
+def _owned_staging(directory: Path, log_dir: Path):
     if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
         raise ArtifactError("invalid generation staging root")
     if directory.exists():
         if {item.name for item in directory.iterdir()} - {"writers.lock", "dataset"}:
             raise ArtifactError("unexpected data in the generation staging root")
-        retire_staging(directory, "generation")
+        retire_staging(directory, "generation", log_dir / "previous-writers.lock")
     directory.mkdir()
     try:
-        (directory / "writers.lock").touch(exist_ok=False)
+        create_writer_lease(directory, log_dir.name)
         yield directory
     except BaseException as error:
         try:
-            retire_staging(directory, "generation")
+            retire_staging(directory, "generation", log_dir / "writers.lock")
         except (ArtifactError, OSError) as cleanup:
             error.add_note(f"generation staging cleanup: {cleanup}")
         raise
     else:
-        retire_staging(directory, "generation")
+        retire_staging(directory, "generation", log_dir / "writers.lock")
 
 
 def generate_saved_dataset(config: ResolvedConfig, overrides, started: float) -> Path:
@@ -206,7 +208,7 @@ def generate_saved_dataset(config: ResolvedConfig, overrides, started: float) ->
         )
         complete = False
         try:
-            with _owned_staging(root / f".{path.name}.generation") as stage:
+            with _owned_staging(root / f".{path.name}.generation", log_dir) as stage:
                 worktree = stage / "dataset"
                 shards = worktree / "shards"
                 shards.mkdir(parents=True)

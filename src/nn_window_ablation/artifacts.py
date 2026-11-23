@@ -113,7 +113,27 @@ def publish_directory(staging: Path, path: Path) -> None:
     _sync_directory(path.parent)
 
 
-def retire_staging(stage: Path, operation: str) -> None:
+def create_writer_lease(stage: Path, attempt: str) -> None:
+    with (stage / "writers.lock").open("x", encoding="ascii") as file:
+        file.write(attempt)
+
+
+def open_writer_lease(path: Path, attempt: str) -> BinaryIO:
+    file = path.open("rb")
+    try:
+        fcntl.flock(file, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        # An initializer may have paused between open and flock, or a new
+        # generation may now own the same staging path.
+        if file.read() != attempt.encode("ascii") or not os.path.samefile(path, file.fileno()):
+            raise ArtifactError("worker lease no longer belongs to this attempt")
+        return file
+    except BaseException:
+        file.close()
+        raise
+
+
+def retire_staging(stage: Path, operation: str, retired_lease: Path) -> None:
+    """Fence writers and remove the stage under the coordinator's run lock."""
     lease = stage / "writers.lock"
     if lease.is_symlink() or (lease.exists() and not lease.is_file()):
         raise ArtifactError(f"invalid {operation} worker lease")
@@ -122,9 +142,17 @@ def retire_staging(stage: Path, operation: str) -> None:
         # an already quiescent attempt. No worker opens the lease with O_CREAT.
         shutil.rmtree(stage)
         return
-    with lease.open("rb") as file:
+    with lease.open("r+b") as file:
         try:
             fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ArtifactError(f"{operation} attempt {stage.name} still has live writers; retry after they exit") from exc
+        # Renaming on the same filesystem keeps the locked inode intact. No
+        # new worker can open it by its staging name, and NFS has no open
+        # lease to silly-rename when rmtree unlinks the staged files.
+        # Old attempts may have lost their logs while retaining the stage.
+        retired_lease.parent.mkdir(parents=True, exist_ok=True)
+        if os.path.lexists(retired_lease):
+            raise ArtifactError(f"retired {operation} lease already exists: {retired_lease}")
+        lease.rename(retired_lease)
         shutil.rmtree(stage)
