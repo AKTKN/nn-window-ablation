@@ -57,7 +57,28 @@ run name, roots, and settings, and add
 `checkpoint.resume_from=runs/base/checkpoint.pt`. The terminal checkpoint can
 be opened again with zero additional updates. New continuation arms instead
 start with `checkpoint.init_from` and a fresh optimizer.
+The default save cadence is 100 updates, with mandatory saves at initialization,
+an explicit pause, and the terminal update. Reopening the latest durable
+checkpoint may replay work after that save.
 [Training configuration](../src/nn_window_ablation/conf/README.md)
+
+To generate a finite training set before starting optimization, use a fresh
+training run and this alternative to the on-demand training command.
+
+```bash
+nnwa generate "${cpu[@]}" data.split=train data.id=training \
+  data.shots=5 data.shard_shots=3
+nnwa train "${cpu[@]}" run_name=stored \
+  data.train_source=stored_shards data.id=training \
+  training.max_steps=2 training.batch_size=2 training.microbatch_size=1 \
+  training.optimizer=adam training.learning_rate=0.001 training.scheduler=none \
+  checkpoint.save_every_updates=2
+```
+
+Four of the five saved trajectories are consumed once. Pass a budget within
+the stored capacity and retain the generator's seed, family, replicate, and
+training phase. The evaluation example below uses the earlier `base`
+checkpoint. Substitute `runs/stored/checkpoint.pt` to evaluate the stored run.
 
 ## 3. Evaluate one checkpoint three ways
 
@@ -75,6 +96,10 @@ deployment windows. All three see the same held-out trajectories. The
 manifest binds the checkpoint hash, shot IDs, and query settings. Add
 `evaluation.matching=true` to include matching with the original detector
 error model.
+
+If evaluation stops, repeat the same command and add
+`evaluation.resume=true`. The final manifest becomes available to analysis
+after every expected shard is verified and committed.
 
 Read `runs/summary/rates.csv` for shot counts, failures, logical error rates,
 and Wilson intervals. Read `contrasts.csv` for signed paired differences and

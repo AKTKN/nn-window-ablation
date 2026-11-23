@@ -15,6 +15,8 @@ frozen checkpoint for paired G/F/S and reports whole-trajectory statistics.
 P6 runs matched S+/W/D continuation and verifies the controls in paired analysis.
 P7 renders PBS jobs, records execution evidence, and reconstructs analyses
 from verified portable bundles.
+The reliability update adds bounded dataset readers, periodic checkpoints,
+and transactional evaluation resume.
 
 ## GitHub publication
 
@@ -48,6 +50,18 @@ The scientific pilot is $d=5$; a small $d=3$ unit fixture is permitted in P1 but
 not a required training stage or the pilot.
 
 ## Validation record
+
+### Reliability update
+
+The cumulative ordinary suite passed 281 tests and the isolated resource
+suite passed four. A Linux child read 96 shards under a 24-descriptor limit,
+peaking at four payload mappings for full reads and three for labels-only
+reads. A genuine distance-5 run resumed finite stored training and recovered
+paired inference after process termination. The resumed outputs matched the
+uninterrupted outputs and reproduced the paired statistics through export,
+reanalysis, and PBS artifact verification. The shared-filesystem and
+production-throughput checks remain pending.
+[Reliability verification](docs/verification/reliability.md)
 
 ### P7
 

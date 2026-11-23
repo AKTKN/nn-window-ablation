@@ -11,7 +11,7 @@ from nn_window_ablation.simulation import sample_shots
 import nn_window_ablation.streams as stream_module
 from nn_window_ablation.streams import ChunkCursor, TrajectoryStream
 from nn_window_ablation.training import TrainingRandomness
-from tests.p4_checks import assert_exact, reference_seed, setup_plan
+from tests.p4_checks import read_batch, assert_exact, reference_seed, setup_plan
 
 
 def test_p4_chunk_records_independent_of_worker_assignment_and_restart(tmp_path):
@@ -114,6 +114,6 @@ def test_p4_frozen_rows_are_readable_but_new_sampling_requires_the_recorded_stim
     monkeypatch.setattr(stim, "__version__", "simulated-different-stim")
 
     loaded = open_dataset(path, expected_split="test")
-    assert_exact(loaded.shards[0].read().shots.detectors, original.detectors)
+    assert_exact(read_batch(loaded, 0).shots.detectors, original.detectors)
     with pytest.raises(ArtifactError, match="sampling recipe requires Stim .*found simulated-different-stim"):
         sample_chunk(loaded.plan, loaded.bundle, 0)

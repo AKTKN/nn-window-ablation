@@ -10,6 +10,7 @@ from nn_window_ablation.evaluation import FrozenEvaluator, model_state_sha256
 from nn_window_ablation.paired_workflows import analyze_workflow, evaluate_workflow
 from nn_window_ablation.simulation import ArrivalPhase
 from nn_window_ablation.windows import Buffers, crop_observations
+from tests.p4_checks import read_batch
 from tests.p5_checks import frozen_pilot
 
 
@@ -23,7 +24,7 @@ def test_p5_full_d5_paired_pipeline_and_order_invariance(frozen_pilot):
     assert (decoder.rnn.hidden_size, decoder.rnn.num_layers) == (256, 4)
     before = model_state_sha256(decoder)
     evaluator = FrozenEvaluator(decoder, dataset.bundle, Buffers(5, 5))
-    row = dataset.shards[0].read().shots
+    row = read_batch(dataset, 0).shots
     direct = {mode: evaluator.logits(mode, row.detectors, row.shot_ids) for mode in ("G", "F", "S")}
     for mode in ("S", "G", "F"):
         reordered = evaluator.logits(mode, row.detectors[::-1], row.shot_ids[::-1])
@@ -68,7 +69,7 @@ def test_p5_full_d5_paired_pipeline_and_order_invariance(frozen_pilot):
     all_errors = {mode: [] for mode in stored}
     all_core_counts = {mode: [] for mode in ("F", "S")}
     for shard in dataset.shards:
-        shots = shard.read().shots
+        shots = read_batch(dataset, shard.index).shots
         raw = path.parent / "shards" / str(shard.index)
         np.testing.assert_array_equal(np.load(raw / "shot_ids.npy"), shots.shot_ids)
         np.testing.assert_array_equal(_literal_parity(shots.core_labels), shots.global_labels)
@@ -115,7 +116,7 @@ def test_p5_full_d5_paired_pipeline_and_order_invariance(frozen_pilot):
     release = manifest["conditions"]["S"]["queries"][10]["release"]
     release["phase"] = "destructive_readout"
     write_json(path, manifest)
-    with pytest.raises(ArtifactError, match="query partition"):
+    with pytest.raises(ArtifactError, match="semantic contract|query partition"):
         analyze_workflow(resolve("run_name=wrong-endpoint", *overrides))
     release["phase"] = "ancilla"
 

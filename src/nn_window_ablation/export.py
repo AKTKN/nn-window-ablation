@@ -162,6 +162,7 @@ def export_bundle(
     report_receipt = file_integrity(report_path)
     report = _complete(report_path)
     mapped = open_dataset(dataset)
+    mapped.verify_payloads()
     if mapped.plan.namespace.split not in ("test", "validation") or mapped.plan.core_count != 12:
         raise ArtifactError("export requires a finalized held-out 12-core dataset")
     inputs = []
@@ -195,6 +196,7 @@ def export_bundle(
         training_paths = []
         for index, source in enumerate(training_datasets):
             training = open_dataset(source, expected_split="train")
+            training.verify_payloads()
             name = f"training/{index}"
             _copy_dataset(staging, name, source, training, files, detectors=True)
             training_paths.append(name)

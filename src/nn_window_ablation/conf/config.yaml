@@ -22,6 +22,7 @@ checkpoint:
   path: null
   init_from: null
   resume_from: null
+  save_every_updates: 100
 hydra:
   job:
     chdir: false

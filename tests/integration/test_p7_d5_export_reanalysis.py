@@ -11,6 +11,7 @@ from nn_window_ablation.evaluation import FrozenEvaluator, model_state_sha256
 from nn_window_ablation.execution import generate_workflow, train_workflow
 from nn_window_ablation.paired_workflows import analyze_workflow, evaluate_workflow
 from nn_window_ablation.windows import Buffers
+from tests.p4_checks import read_batch
 from tests.p5_checks import frozen_pilot
 from tests.p6_checks import ARMS, TEST_BUDGET, continuation_pilot
 from tests.p7_checks import cli
@@ -31,7 +32,7 @@ def test_p7_d5_stats_clean_room_and_separate_redecode(frozen_pilot, tmp_path):
         "analysis.bootstrap_seed=71", "analysis.bootstrap_replicates=39", "analysis.sparse_rule=1",
     ))
     expected = json.loads(report.read_text())
-    rows = mapped.shards[0].read().shots
+    rows = read_batch(mapped, 0).shots
     np.testing.assert_array_equal(np.logical_xor.reduce(rows.core_labels, axis=1), rows.global_labels)
     truth = {}
     for mode in ("G", "F", "S"):
@@ -100,7 +101,7 @@ Path("guard-active").touch()
     decoder = load_evaluation_model(decode_root / manifest["runs"][0]["checkpoint"])
     assert model_state_sha256(decoder) == initial
     restored = open_dataset(decode_root / manifest["dataset"]["path"], expected_split="test")
-    same = restored.shards[0].read().shots
+    same = read_batch(restored, 0).shots
     np.testing.assert_array_equal(same.shot_ids, rows.shot_ids)
     np.testing.assert_array_equal(same.detectors, rows.detectors)
     evaluator = FrozenEvaluator(decoder, restored.bundle, Buffers(5, 5))

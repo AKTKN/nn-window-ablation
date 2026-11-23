@@ -1,17 +1,21 @@
 """Immutable packed datasets and deterministic sampling identities."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
+import mmap
+import os
 
 import numpy as np
 from numpy.typing import NDArray
 import stim
 
 from .artifacts import (
-    ArtifactError, atomic_file, canonical_json, file_integrity, read_json, staged_directory, verify_file, write_json,
+    ArtifactError, atomic_file, canonical_json, file_integrity, read_json, read_json_artifact, staged_directory, verify_file, write_json,
 )
+from .continuation import is_digest
 from .simulation import (
     Arrival, ArrivalPhase, CircuitArtifact, CircuitBundle, CircuitSpec, CoreInterval, Detector, Measurement,
     Observable, ShotBatch, TemporalCut, sample_shots,
@@ -257,81 +261,209 @@ def write_dataset(
 
 
 @dataclass(frozen=True, slots=True)
-class MappedLabelShard:
-    plan: SamplingPlan
-    index: int
-    global_labels: NDArray[np.uint8]
-    core_labels: NDArray[np.uint8]
-    shot_ids: NDArray[np.int64]
+class ArrayDescriptor:
+    role: str
+    path: Path
+    shape: tuple[int, ...]
+    dtype: str
+    valid_bits: int | None
+    bytes: int
+    sha256: str
+
+    @property
+    def integrity(self) -> dict:
+        return {"bytes": self.bytes, "sha256": self.sha256}
 
 
 @dataclass(frozen=True, slots=True)
-class MappedShard(MappedLabelShard):
-    detectors: NDArray[np.uint8]
+class ShardDescriptor:
+    index: int
+    start: int
+    rows: int
+    directory: Path
+    manifest_sha256: str
+    manifest_bytes: int
+    arrays: tuple[ArrayDescriptor, ...]
+
+    def source_record(self) -> dict:
+        return {
+            "manifest": {"bytes": self.manifest_bytes, "sha256": self.manifest_sha256},
+            "arrays": {array.path.name: array.integrity for array in self.arrays},
+        }
+
+
+@contextmanager
+def _map_array(spec: ArrayDescriptor) -> Iterator[NDArray]:
+    """Own a read-only mapping. Only the private shard reader gets its ndarray."""
+    try:
+        with spec.path.open("rb") as file:
+            if os.fstat(file.fileno()).st_size != spec.bytes:
+                raise ArtifactError(f"size or checksum mismatch for {spec.path.name}")
+            version = np.lib.format.read_magic(file)
+            if version == (1, 0):
+                shape, fortran, dtype = np.lib.format.read_array_header_1_0(file)
+            elif version == (2, 0):
+                shape, fortran, dtype = np.lib.format.read_array_header_2_0(file)
+            else:
+                raise ArtifactError(f"unsupported NPY header in {spec.path.name}")
+            offset = file.tell()
+            if (
+                shape != spec.shape or dtype != np.dtype(spec.dtype)
+                or offset + dtype.itemsize * spec.shape[0] * (spec.shape[1] if len(spec.shape) == 2 else 1) != spec.bytes
+            ):
+                raise ArtifactError(f"wrong shape, dtype or valid-bit count for {spec.role}")
+            mapping = mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
+    except ArtifactError:
+        raise
+    except FileNotFoundError as exc:
+        raise ArtifactError(f"missing or unreadable artifact {spec.path}") from exc
+    except (ValueError, OSError, EOFError) as exc:
+        raise ArtifactError(f"invalid NPY payload for {spec.path.name}: {exc}") from exc
+    with mapping:
+        if sha256(mapping).hexdigest() != spec.sha256:
+            raise ArtifactError(f"size or checksum mismatch for {spec.path.name}")
+        yield np.ndarray(shape, dtype=dtype, buffer=mapping, offset=offset, order="F" if fortran else "C")
+
+
+class OpenShard:
+    """Read independent arrays from one verified shard until it is closed."""
+
+    def __init__(self, descriptor: ShardDescriptor, plan: SamplingPlan, *, labels_only: bool):
+        self.descriptor = descriptor
+        self.plan = plan
+        self.index = descriptor.index
+        self.rows = descriptor.rows
+        self._stack = ExitStack()
+        self._arrays = {}
+        self._closed = False
+        try:
+            for spec in descriptor.arrays:
+                if labels_only and spec.role == "detectors":
+                    continue
+                self._arrays[spec.role] = self._stack.enter_context(_map_array(spec))
+            self._verify_rows()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        self._closed = True
+        self._arrays.clear()
+        self._stack.close()
+
+    def _array(self, role: str) -> NDArray:
+        if self._closed:
+            raise RuntimeError("shard handle is closed")
+        if role not in self._arrays:
+            raise ValueError("detector payloads are unavailable in a labels-only shard")
+        return self._arrays[role]
+
+    def _verify_rows(self) -> None:
+        for start in range(0, self.rows, 65536):
+            stop = min(start + 65536, self.rows)
+            rows = slice(start, stop)
+            for spec in self.descriptor.arrays:
+                width = spec.valid_bits
+                if spec.role in self._arrays and width is not None and width % 8:
+                    if np.any(self._array(spec.role)[rows, -1] >> (width % 8)):
+                        raise ArtifactError(f"nonzero padding bits for {spec.role}")
+            expected = _shot_ids(self.plan, self.descriptor.start + start, stop - start)
+            if not np.array_equal(self._array("shot_ids")[rows], expected):
+                raise ArtifactError("wrong, duplicate or reordered shot IDs for shard")
+            parity = np.bitwise_count(self._array("core_labels")[rows]).sum(axis=1) & 1
+            if not np.array_equal(parity, self._array("global_labels")[rows, 0]):
+                raise ArtifactError("core label parity differs from global label")
+
+    @property
+    def shot_ids(self) -> NDArray[np.int64]:
+        return self._array("shot_ids").copy()
+
+    def read_labels(self, rows: slice | NDArray[np.int64] = slice(None)) -> tuple[NDArray, NDArray]:
+        global_labels = np.unpackbits(
+            self._array("global_labels")[rows], axis=1, count=1, bitorder=BITORDER,
+        ).reshape(-1)
+        core_labels = np.unpackbits(
+            self._array("core_labels")[rows], axis=1, count=self.plan.core_count, bitorder=BITORDER,
+        )
+        return global_labels.astype(bool), core_labels.astype(bool)
 
     def read(self, rows: slice | NDArray[np.int64] = slice(None)) -> TrajectoryBatch:
-        ids = self.shot_ids[rows].copy()
-        detectors = np.unpackbits(self.detectors[rows], axis=1, count=self.plan.detector_count, bitorder=BITORDER)
-        global_labels = np.unpackbits(self.global_labels[rows], axis=1, count=1, bitorder=BITORDER)[:, 0]
-        core_labels = np.unpackbits(self.core_labels[rows], axis=1, count=self.plan.core_count, bitorder=BITORDER)
-        shots = ShotBatch(detectors.astype(bool), global_labels.astype(bool), core_labels.astype(bool), ids, None)
-        _check_label_parity(shots)
-        start, _ = self.plan.chunk_bounds(self.index)
+        ids = self._array("shot_ids")[rows].copy()
+        detectors = np.unpackbits(
+            self._array("detectors")[rows], axis=1, count=self.plan.detector_count, bitorder=BITORDER,
+        ).astype(bool)
+        global_labels, core_labels = self.read_labels(rows)
+        shots = ShotBatch(detectors, global_labels, core_labels, ids, None)
         identities = tuple(
-            TrajectoryID(self.plan.dataset_id, self.index, int(shot) - self.plan.shot_prefix - start) for shot in ids
+            TrajectoryID(self.plan.dataset_id, self.index, int(shot) - self.plan.shot_prefix - self.descriptor.start)
+            for shot in ids
         )
         return TrajectoryBatch(shots, identities)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class MappedDataset:
     plan: SamplingPlan
-    bundle: CircuitBundle
-    shards: tuple[MappedShard, ...]
+    bundle: CircuitBundle | None
+    shards: tuple[ShardDescriptor, ...]
     manifest_sha256: str
+    _active: bool = False
+
+    @contextmanager
+    def open_shard(self, index: int, *, labels_only: bool = False) -> Iterator[OpenShard]:
+        if type(index) is not int or not 0 <= index < len(self.shards):
+            raise IndexError("shard index is outside the dataset inventory")
+        if self._active:
+            raise RuntimeError("close the active dataset shard before opening another")
+        self._active = True
+        try:
+            descriptor = self.shards[index]
+            verify_file(
+                descriptor.directory / "shard.json",
+                {"bytes": descriptor.manifest_bytes, "sha256": descriptor.manifest_sha256},
+            )
+            handle = OpenShard(descriptor, self.plan, labels_only=labels_only or self.bundle is None)
+            try:
+                yield handle
+            finally:
+                handle.close()
+        finally:
+            self._active = False
+
+    def verify_payloads(self) -> None:
+        """Verify every shard sequentially, including labels and exact row identities."""
+        for shard in self.shards:
+            with self.open_shard(shard.index):
+                pass
 
 
-@dataclass(frozen=True, slots=True)
-class MappedLabels:
-    plan: SamplingPlan
-    shards: tuple[MappedLabelShard, ...]
-    manifest_sha256: str
-
-
-def _read_shard(root: Path, plan: SamplingPlan, index: int, inventory: dict, *, labels_only: bool = False):
-    if inventory["index"] != index:
+def _describe_shard(root: Path, plan: SamplingPlan, index: int, inventory: dict) -> ShardDescriptor:
+    if type(inventory["index"]) is not int or inventory["index"] != index:
         raise ArtifactError("dataset shard identities are duplicated or out of order")
     path = root / "shard.json"
-    verify_file(path, inventory["manifest"])
-    record = read_json(path)
+    record, manifest = read_json_artifact(path)
+    if manifest != inventory["manifest"]:
+        raise ArtifactError(f"size or checksum mismatch for {path.name}")
     if {key: value for key, value in record.items() if key != "arrays"} != _shard_identity(plan, index):
         raise ArtifactError("shard identity or schema differs from the dataset manifest")
     if set(record["arrays"]) != set(ARRAY_FILES):
         raise ArtifactError("shard must contain exactly the declared array roles")
-    arrays = {}
+    arrays = []
     start, count = plan.chunk_bounds(index)
     for role, width in _bit_widths(plan).items():
-        if labels_only and role == "detectors":
-            continue
         entry = record["arrays"][role]
-        path = root / ARRAY_FILES[role]
-        if entry["role"] != role or entry["filename"] != path.name:
+        filename = ARRAY_FILES[role]
+        if entry["role"] != role or entry["filename"] != filename:
             raise ArtifactError(f"reassigned artifact identity for {role}")
-        verify_file(path, {key: entry[key] for key in ("bytes", "sha256")})
-        dtype = np.dtype("uint8") if width is not None else np.dtype("int64")
-        expected_shape = (count, (width + 7) // 8) if width is not None else (count,)
-        array = np.load(path, mmap_mode="r", allow_pickle=False)
-        if (
-            entry["valid_bits"] != width or entry["dtype"] != dtype.name or entry["shape"] != list(expected_shape)
-            or array.dtype != dtype or array.shape != expected_shape
-        ):
+        dtype = "uint8" if width is not None else "int64"
+        shape = (count, (width + 7) // 8) if width is not None else (count,)
+        if entry["valid_bits"] != width or entry["dtype"] != dtype or entry["shape"] != list(shape):
             raise ArtifactError(f"wrong shape, dtype or valid-bit count for {role}")
-        if width is not None and width % 8 and np.any(array[:, -1] >> (width % 8)):
-            raise ArtifactError(f"nonzero padding bits for {role}")
-        arrays[role] = array
-    if not np.array_equal(arrays["shot_ids"], _shot_ids(plan, start, count)):
-        raise ArtifactError("wrong, duplicate or reordered shot IDs for shard")
-    return (MappedLabelShard if labels_only else MappedShard)(plan, index, **arrays)
+        length, digest = entry["bytes"], entry["sha256"]
+        if type(length) is not int or length <= 0 or not is_digest(digest):
+            raise ArtifactError(f"invalid payload integrity record for {role}")
+        arrays.append(ArrayDescriptor(role, root / filename, shape, dtype, width, length, digest))
+    return ShardDescriptor(index, start, count, root, manifest["sha256"], manifest["bytes"], tuple(arrays))
 
 
 def _arrival(record: dict) -> Arrival:
@@ -366,18 +498,19 @@ def _read_physical(path: Path, plan: SamplingPlan, records: dict) -> CircuitBund
 
 
 def open_dataset(path: Path, *, expected_split: str | None = None) -> MappedDataset:
-    """Verify all completed shard manifests and memory-map the immutable arrays."""
+    """Open dataset metadata. Payloads are verified when their shard is opened."""
     return _open_dataset(path, expected_split, labels_only=False)
 
 
-def open_labels(path: Path, *, expected_split: str | None = None) -> MappedLabels:
-    """Verify and map the original label arrays without opening detector or circuit files."""
+def open_labels(path: Path, *, expected_split: str | None = None) -> MappedDataset:
+    """Open metadata for labels and IDs without requiring detector or circuit files."""
     return _open_dataset(path, expected_split, labels_only=True)
 
 
 def _open_dataset(path: Path, expected_split: str | None, *, labels_only: bool):
-    manifest = read_json(path / "manifest.json")
-    if manifest.get("schema_version") != DATASET_SCHEMA or manifest.get("status") != "complete":
+    manifest, receipt = read_json_artifact(path / "manifest.json")
+    if (type(manifest.get("schema_version")) is not int or manifest["schema_version"] != DATASET_SCHEMA
+            or manifest.get("status") != "complete"):
         raise ArtifactError("incomplete dataset or incompatible dataset schema")
     if not isinstance(manifest.get("provenance"), dict):
         raise ArtifactError("dataset manifest lacks a provenance record")
@@ -390,12 +523,12 @@ def _open_dataset(path: Path, expected_split: str | None, *, labels_only: bool):
         count = (plan.total_rows + plan.chunk_rows - 1) // plan.chunk_rows
         if len(manifest["shards"]) != count:
             raise ArtifactError("dataset shard inventory does not match its complete row count")
-        shards = tuple(_read_shard(path / "shards" / str(index), plan, index, entry, labels_only=labels_only)
+        if not isinstance(manifest["physical"], dict) or set(manifest["physical"]) != set(PHYSICAL_FILES):
+            raise ArtifactError("incomplete circuit artifact inventory")
+        shards = tuple(_describe_shard(path / "shards" / str(index), plan, index, entry)
                        for index, entry in enumerate(manifest["shards"]))
-        digest = str(file_integrity(path / "manifest.json")["sha256"])
-        if labels_only:
-            return MappedLabels(plan, shards, digest)
-        return MappedDataset(plan, _read_physical(path, plan, manifest["physical"]), shards, digest)
+        bundle = None if labels_only else _read_physical(path, plan, manifest["physical"])
+        return MappedDataset(plan, bundle, shards, receipt["sha256"])
     except ArtifactError:
         raise
     except (KeyError, TypeError, ValueError, OSError, EOFError) as exc:

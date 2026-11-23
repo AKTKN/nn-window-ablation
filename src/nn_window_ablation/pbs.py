@@ -310,20 +310,41 @@ def _verified_artifact(job: JobSpec, config, path: Path) -> tuple[dict, dict]:
         from .data import open_dataset
 
         mapped = open_dataset(path.parent, expected_split=config.data.split)
+        mapped.verify_payloads()
         provenance = read_json(path)["provenance"]
         if mapped.plan.total_rows != config.data.shots or provenance["resolved_config"] != config.to_record():
             raise ArtifactError("generation did not publish the expected dataset")
         actual = provenance["runtime"]
     elif job.stage == "evaluate":
-        from .paired_workflows import _dataset, _read_manifest, _read_shard
+        from .paired_workflows import _dataset, _evaluation_request, _read_manifest, _read_shard, _verify_commit
 
         _, mapped = _dataset(config)
         manifest = _read_manifest(path, mapped)
-        if manifest["resolved_config"] != config.to_record():
+        checkpoint_digest = file_integrity(config.checkpoint.path)["sha256"]
+        if (
+            _evaluation_request(manifest["resolved_config"]) != _evaluation_request(config.to_record())
+            or any(
+                item["checkpoint"]["sha256"] != checkpoint_digest
+                for item in manifest["conditions"].values() if item["checkpoint"] is not None
+            )
+        ):
             raise ArtifactError("evaluation manifest does not match the planned run")
-        for shard in mapped.shards:
-            for _ in _read_shard(path, manifest, shard):
-                pass
+        if "contract_sha256" in manifest and {p.name for p in (path.parent / "shards").iterdir()} != {
+            str(desc.index) for desc in mapped.shards
+        }:
+            raise ArtifactError("evaluation artifact has missing or unexpected committed shard directories")
+        for descriptor in mapped.shards:
+            with mapped.open_shard(descriptor.index) as shard:
+                if "contract_sha256" in manifest:
+                    entry = _verify_commit(
+                        path.parent / "shards" / str(descriptor.index), descriptor, shard,
+                        manifest["conditions"], manifest["contract_sha256"],
+                    )
+                    if entry != manifest["shards"][descriptor.index]:
+                        raise ArtifactError("evaluation inventory disagrees with the committed shard receipt")
+                else:
+                    for _ in _read_shard(path, manifest, shard):
+                        pass
         actual = manifest["runtime"]
     elif job.stage == "profile":
         profile = read_json(path)
@@ -374,7 +395,8 @@ def execute_job(job: JobSpec) -> int:
         available = observed["pbs_ncpus"]
         if required > len(observed["cpu_affinity"]) or (available is not None and required > available):
             raise ArtifactError("numerical CPU budget exceeds observed compute allocation")
-        if job.stage != "resume" and os.path.lexists(artifact):
+        resuming = job.stage == "resume" or (job.stage == "evaluate" and config.evaluation.resume)
+        if not resuming and os.path.lexists(artifact):
             raise ArtifactError("job output exists before execution")
         with (directory / "stdout.log").open("xb") as log:
             result = subprocess.run(_command(job, artifact), cwd=root, stdout=log, stderr=subprocess.STDOUT)

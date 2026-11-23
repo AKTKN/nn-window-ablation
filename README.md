@@ -113,8 +113,9 @@ conda run -n nn_window_decoding nnwa train runtime=local_cpu runtime.allocated_c
 
 To resume, repeat the training command with the original `run_name`, settings
 and roots, plus `checkpoint.resume_from=runs/pilot-check/checkpoint.pt`.
-Every completed update publishes a checkpoint. The run resumes toward its
-original phase budget, and reopening a terminal checkpoint adds zero updates.
+The initial state and every 100 completed updates publish a checkpoint by
+default. Explicit pauses and the terminal update always save. A restart
+replays work after the last durable checkpoint and keeps the original budget.
 To train from a finalized train split, specify `data.train_source=stored_shards`
 and its `data.id`. [Configuration](src/nn_window_ablation/conf/README.md) ·
 [P4 verification](docs/verification/P4.md)
@@ -136,6 +137,8 @@ conda run -n nn_window_decoding nnwa analyze runtime=local_cpu runtime.allocated
 
 Evaluation saves shot identities, packed decisions, and logits. Use
 `evaluation.matching=true` to include the original-DEM PyMatching baseline.
+For an interrupted evaluation, repeat its settings with the original output
+run name and add `evaluation.resume=true`. Verified committed shards are reused.
 Analysis writes `report.json`, `rates.csv`, and `contrasts.csv` under its run
 directory. [P5 verification](docs/verification/P5.md)
 

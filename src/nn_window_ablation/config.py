@@ -153,6 +153,7 @@ class EvaluationConfig:
     update_model_state: bool
     batch_size: int
     matching: bool
+    resume: bool = False
 
 
 @dataclass
@@ -182,6 +183,7 @@ class CheckpointConfig:
     path: Path | None
     init_from: Path | None
     resume_from: Path | None
+    save_every_updates: int | None = 100
 
 
 @dataclass
@@ -220,11 +222,10 @@ class ResolvedConfig:
         """Return a portable record with source fields and derived geometry."""
         record = asdict(self)
         record["geometry"] = asdict(self.geometry)
-        for group in ("paths", "checkpoint"):
-            record[group] = {
-                key: str(value) if value is not None else None
-                for key, value in record[group].items()
-            }
+        for group, names in (("paths", ("data_root", "run_root")), ("checkpoint", ("path", "init_from", "resume_from"))):
+            for name in names:
+                value = record[group][name]
+                record[group][name] = str(value) if value is not None else None
         return record
 
 
@@ -263,16 +264,20 @@ def resolve_config(config: DictConfig, *, invocation_dir: Path) -> ResolvedConfi
             "training": ("max_steps", "batch_size", "microbatch_size", "scheduler_step_size"),
             "evaluation": ("batch_size",),
             "analysis": ("bootstrap_replicates", "bootstrap_seed", "sparse_rule", "ratio_min_denominator_failures"),
+            "checkpoint": ("save_every_updates",),
         }.items():
             for name in names:
-                value = raw[group][name]
+                value = raw[group].get(name) if group == "checkpoint" else raw[group][name]
                 if value is not None and type(value) is not int:
                     raise ConfigError(f"{group}.{name} must be an integer")
         if type(raw["run_name"]) is not str:
             raise ConfigError("run_name must be a string")
+        if type(raw["evaluation"].get("resume", False)) is not bool:
+            raise ConfigError("evaluation.resume must be boolean")
         validate_run_name(raw["run_name"])
-        for group in ("paths", "checkpoint"):
-            for name, value in raw[group].items():
+        for group, names in (("paths", ("data_root", "run_root")), ("checkpoint", ("path", "init_from", "resume_from"))):
+            for name in names:
+                value = raw[group][name]
                 if group == "checkpoint" and value is None:
                     continue
                 if type(value) is not str or not value.strip() or "\0" in value:
@@ -298,6 +303,9 @@ def resolve_config(config: DictConfig, *, invocation_dir: Path) -> ResolvedConfi
 
 
 def _validate_settings(config: ResolvedConfig) -> None:
+    interval = config.checkpoint.save_every_updates
+    if interval is not None and (type(interval) is not int or interval < 1):
+        raise ConfigError("checkpoint.save_every_updates must be a positive integer or null")
     code, noise, window, model = config.code, config.noise, config.window, config.model
     if config.schema_version != 1:
         raise ConfigError("schema_version must be 1")

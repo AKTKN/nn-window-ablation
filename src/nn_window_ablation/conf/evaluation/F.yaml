@@ -7,3 +7,4 @@ reset_recurrent_state_per_query: true
 update_model_state: false
 batch_size: 1
 matching: false
+resume: false

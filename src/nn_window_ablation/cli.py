@@ -36,6 +36,7 @@ def _publish_jobs(command: str, jobs: list[ValidationJob], invocation_dir: Path)
         if any(
             (job.config.paths.run_root, job.config.run_name) != (first.paths.run_root, first.run_name)
             or job.config.checkpoint.resume_from is not None
+            or (command == "evaluate" and job.config.evaluation.resume)
             for job in jobs
         ):
             raise ConfigError("new sweep jobs must share their run parent; resume jobs individually")

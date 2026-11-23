@@ -8,6 +8,7 @@ import stim
 from nn_window_ablation.artifacts import file_integrity
 from nn_window_ablation.evaluation import MatchingReference
 from nn_window_ablation.paired_workflows import evaluate_workflow
+from tests.p4_checks import read_batch
 from tests.p5_checks import frozen_pilot
 
 
@@ -27,7 +28,7 @@ def test_p5_matching_uses_original_global_dem_and_the_same_detector_rows(frozen_
     assert record["baseline"]["num_observables"] == 1 and record["baseline"]["decompose_errors"]
     independent = pymatching.Matching.from_detector_error_model(dem)
     for shard in dataset.shards:
-        rows = shard.read().shots
+        rows = read_batch(dataset, shard.index).shots
         stored = path.parent / "shards" / str(shard.index)
         np.testing.assert_array_equal(np.load(stored / "shot_ids.npy"), rows.shot_ids)
         decisions = np.unpackbits(np.load(stored / "MWPM.decisions.npy"), count=1, axis=1, bitorder="little")

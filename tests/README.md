@@ -16,7 +16,7 @@ export VECLIB_MAXIMUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export PYTHONHASHSEED=0
 python -m pytest -n 8 --dist=load --strict-markers --strict-config \
-  -m "not performance and not cluster" tests
+  -m "not resource_process and not performance and not cluster" tests
 ```
 
 If the process is allocated fewer than eight CPUs, use the smaller explicit
@@ -30,6 +30,14 @@ with `runtime=test_cpu`, `runtime.processes=1`, `data.num_workers=0`, and
 `data.sampling_processes=1`. For allocations smaller than eight, also set
 `runtime.allocated_cpus` to the actual allocation. The parent worker waits for
 its child without starting a second pytest pool.
+
+Run the tests marked `resource_process` in a separate session with the same
+thread limits. The smaller pool accommodates the Linux descriptor-limit
+child and subprocess termination barriers.
+
+```bash
+python -m pytest -n 2 --dist=load --strict-markers --strict-config -m resource_process tests
+```
 
 The P0 integration fixture builds one wheel using the active environment's
 setuptools and wheel. It uses a lock to install the wheel once into a temporary

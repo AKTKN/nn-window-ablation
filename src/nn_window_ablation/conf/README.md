@@ -47,6 +47,9 @@ complete trajectories. `train` accepts `training.optimizer=sgd` or `adam` and
 `data.train_source=generated_chunks` requires `data.training_chunk_shots`.
 `data.train_source=stored_shards` requires `data.id` for a finalized train
 split with a matching circuit, seed, family, replicate, and training phase.
+Generate this dataset with `nnwa generate data.split=train` and the same
+experiment, seed, family, replicate, and training phase. Its finite one-pass
+capacity must cover `training.max_steps * training.batch_size`.
 `data.replicate` is an integer namespace component and defaults to zero.
 
 The CPU profile's 16 intra-operation threads are an initial benchmark candidate,
@@ -77,6 +80,9 @@ To resume training, repeat the original `run_name`, roots, and resolved
 settings with `checkpoint.resume_from` pointing to the run's `checkpoint.pt`.
 For a continuation originally started with `checkpoint.init_from`, omit
 that argument when resuming. The saved checkpoint records the parent.
+`checkpoint.save_every_updates` defaults to `100`. Set a positive integer
+for phase-local periodic saves or `null` for initial, explicit-pause, and
+terminal saves only. Repeat the original cadence on exact resume.
 
 Hydra's basic launcher composes each sweep child in a temporary directory.
 Records are published after the sweep passes validation, with one directory
@@ -122,6 +128,11 @@ prediction manifests; do not relabel a checkpoint by a caller's current
 dataset. Use `evaluation.batch_size` to bound trajectories per forward and
 `evaluation.matching=true` to add PyMatching. `evaluate` and `analyze` default to
 `data.split=test`. Explicit `data.split=validation` selects a validation artifact.
+Set `evaluation.resume=true` to reopen an existing evaluation directory and
+verify its already committed shards. Give each new evaluation its own run name.
+Resume sweep children individually by using their immediate parent as
+`paths.run_root` and quoting the child number as the string `run_name`.
+[Reliability verification](../../../docs/verification/reliability.md)
 
 `analyze` uses the same `data.id` and the manifest paths in `analysis.predictions`.
 It requires `analysis.bootstrap_replicates`, `analysis.bootstrap_seed`, and

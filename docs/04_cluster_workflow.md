@@ -201,7 +201,8 @@ each thread count. Configure the request for the measured workload.
 
 For a naturally interrupted `base` run with a saved checkpoint, submit
 `resume.pbs` in a new receipt directory. It uses the original declared total
-budget and restores the optimizer, scheduler, and stream cursor.
+budget and checkpoint cadence, and restores the optimizer, scheduler, and
+stream cursor. Completed updates after the last durable save can be replayed.
 
 For a controlled acceptance check, use a fresh `base` run with the same
 training settings, then pause via the Python workflow after update one. Run
@@ -250,6 +251,13 @@ receipt directories, the same base `checkpoint.init_from`, and the same
 data and optimizer budget. Select the respective training preset in each.
 Run their paired evaluations with one held-out dataset and identical deployment
 windows. [Matched continuation](verification/P6.md)
+
+To resume an interrupted evaluation, render another `evaluate` plan with the
+same run name and input content, a fresh `receipt_dir`, and
+`evaluation.resume=true` in its overrides. The runner verifies existing
+commits and fills only missing shards. A changed or corrupt committed shard
+requires investigation or a new evaluation run.
+[Reliability and artifact verification](verification/reliability.md)
 
 ## 5. Analyze, transfer, and verify locally
 

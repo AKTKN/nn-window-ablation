@@ -9,7 +9,7 @@ from nn_window_ablation.artifacts import ArtifactError
 from nn_window_ablation.data import TrajectoryID, open_dataset, sample_chunk, write_dataset
 from nn_window_ablation.simulation import ShotBatch
 from tests.p1_checks import sample_fault_signature
-from tests.p4_checks import assert_exact, setup_plan
+from tests.p4_checks import read_batch, assert_exact, setup_plan
 from tests.reference.p1_pauli_frame import Fault, oracle_signature
 from tests.reference.p1_schedule import SMALL
 
@@ -50,20 +50,23 @@ def test_p4_packed_bytes_mmap_and_row_identity(tmp_path):
     dataset = open_dataset(path, expected_split="train")
     assert dataset.plan == plan and dataset.bundle == bundle
     first, last = dataset.shards
-    assert isinstance(first.detectors, np.memmap) and not first.detectors.flags.writeable
-    assert_exact(first.detectors, np.array([
+    detectors = np.load(first.arrays[0].path, allow_pickle=False)
+    global_labels = np.load(first.arrays[1].path, allow_pickle=False)
+    core_labels = np.load(first.arrays[2].path, allow_pickle=False)
+    assert_exact(detectors, np.array([
         [0, 0, 0, 0, 0, 0], [129, 1, 0, 0, 0, 128], [2, 2, 0, 0, 0, 0],
     ], dtype=np.uint8))
-    assert_exact(first.global_labels, np.array([[0], [1], [1]], dtype=np.uint8))
-    assert_exact(first.core_labels, np.array([[0], [1], [2]], dtype=np.uint8))
-    assert_exact(np.unpackbits(first.core_labels, axis=1, count=2, bitorder="little").astype(bool), initial.core_labels)
+    assert_exact(global_labels, np.array([[0], [1], [1]], dtype=np.uint8))
+    assert_exact(core_labels, np.array([[0], [1], [2]], dtype=np.uint8))
+    assert_exact(np.unpackbits(core_labels, axis=1, count=2, bitorder="little").astype(bool), initial.core_labels)
     selected = np.array([2, 0, 1], dtype=np.int64)
-    shuffled = first.read(selected)
+    shuffled = read_batch(dataset, first.index, selected)
+    last_batch = read_batch(dataset, last.index)
     for field in ("detectors", "global_labels", "core_labels", "shot_ids"):
         assert_exact(getattr(shuffled.shots, field), getattr(initial, field)[selected])
-        assert_exact(getattr(last.read().shots, field), getattr(final, field))
+        assert_exact(getattr(last_batch.shots, field), getattr(final, field))
     assert shuffled.identities == tuple(TrajectoryID(plan.dataset_id, 0, i) for i in [2, 0, 1])
-    assert last.read().identities == (TrajectoryID(plan.dataset_id, 1, 0),)
+    assert last_batch.identities == (TrajectoryID(plan.dataset_id, 1, 0),)
     assert not shuffled.shots.detectors[1].any()  # Zero-event row retained.
     with pytest.raises(FileExistsError):
         write_dataset(path, plan, bundle, provenance={})
@@ -76,7 +79,7 @@ def test_p4_split_ids_disjoint_and_zero_event_rows_retained(tmp_path):
         target = tmp_path / split
         write_dataset(target, plan, bundle, provenance={})
         mapped = open_dataset(target, expected_split=split)
-        batches = [shard.read() for shard in mapped.shards]
+        batches = [read_batch(mapped, shard.index) for shard in mapped.shards]
         assert all(not batch.shots.detectors.any() for batch in batches)
         numeric_ids.append({int(shot_id) for batch in batches for shot_id in batch.shots.shot_ids})
         physical_ids.append({identity for batch in batches for identity in batch.identities})
@@ -128,7 +131,7 @@ def test_p4_rejects_damaged_shard_or_artifact_identity(tmp_path, damage):
         _amend_shard(path, lambda arrays: arrays["global_labels"].update(_integrity(global_)))
         expected = "nonzero padding bits"
     with pytest.raises(ArtifactError, match=expected):
-        open_dataset(path)
+        open_dataset(path).verify_payloads()
 
 
 def test_p4_independent_fault_labels_detect_structurally_valid_pairing_swap(tmp_path):
@@ -150,7 +153,7 @@ def test_p4_independent_fault_labels_detect_structurally_valid_pairing_swap(tmp_
     write_dataset(bad, plan, bundle, chunks=(replace(batch, core_labels=batch.core_labels[::-1]),), provenance={})
 
     def check_known_pairing(path):
-        loaded = open_dataset(path).shards[0].read()
+        loaded = read_batch(open_dataset(path), 0)
         assert loaded.identities == (TrajectoryID(plan.dataset_id, 0, 0), TrajectoryID(plan.dataset_id, 0, 1))
         np.testing.assert_array_equal(loaded.shots.detectors, batch.detectors)
         np.testing.assert_array_equal(loaded.shots.core_labels, oracle, err_msg="independent label pairing")

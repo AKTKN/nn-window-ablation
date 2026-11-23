@@ -73,3 +73,8 @@ def convex_loss(model, shots, _cores, _buffers):
     physical_rows = torch.from_numpy(shots.shot_ids & 0xFFFFFFFF)
     targets = torch.tensor([1.0, 4.0, 9.0], dtype=torch.float64)[physical_rows % 3]
     return ((model(len(targets)) - targets) ** 2).mean() / 2
+
+
+def read_batch(dataset, index, rows=slice(None)):
+    with dataset.open_shard(index) as shard:
+        return shard.read(rows)

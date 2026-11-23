@@ -36,6 +36,7 @@ nn_window_ablation = ["conf/*.yaml", "conf/*/*.yaml", "conf/README.md", "LANGE_L
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
+  "resource_process: uses isolated process resource limits or process termination barriers",
   "performance: measures runtime or deliberately uses multiple numerical threads or loader workers",
   "cluster: requires an allocated cluster node or scheduler access",
 ]

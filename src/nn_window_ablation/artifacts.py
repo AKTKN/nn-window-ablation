@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+import fcntl
 from hashlib import sha256
 import json
 import os
@@ -38,13 +39,28 @@ def verify_file(path: Path, expected: object) -> None:
 
 
 def read_json(path: Path) -> dict:
+    return read_json_artifact(path)[0]
+
+
+def read_json_artifact(path: Path) -> tuple[dict, dict]:
     try:
-        record = json.loads(path.read_bytes())
+        payload = path.read_bytes()
+        record = json.loads(payload)
         if not isinstance(record, dict):
             raise ValueError("expected a JSON object")
-        return record
+        return record, {"bytes": len(payload), "sha256": sha256(payload).hexdigest()}
     except (OSError, ValueError) as exc:
         raise ArtifactError(f"missing or invalid manifest {path}") from exc
+
+
+@contextmanager
+def exclusive_lock(path: Path, operation: str) -> Iterator[None]:
+    with path.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ArtifactError(f"another process is updating the selected {operation} run") from exc
+        yield
 
 
 def _sync_directory(directory: Path) -> None:
@@ -85,8 +101,12 @@ def staged_directory(path: Path) -> Iterator[Path]:
     with TemporaryDirectory(dir=path.parent, prefix=f".{path.name}.") as directory:
         staging = Path(directory)
         yield staging
-        _sync_directory(staging)
-        if os.path.lexists(path):
-            raise FileExistsError(path)
-        os.rename(staging, path)
-        _sync_directory(path.parent)
+        publish_directory(staging, path)
+
+
+def publish_directory(staging: Path, path: Path) -> None:
+    _sync_directory(staging)
+    if os.path.lexists(path):
+        raise FileExistsError(path)
+    os.rename(staging, path)
+    _sync_directory(path.parent)

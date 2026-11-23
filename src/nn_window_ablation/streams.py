@@ -1,6 +1,7 @@
 """Phase-scoped trajectory order and resumable chunk positions."""
 
 from dataclasses import dataclass
+from contextlib import ExitStack
 
 import numpy as np
 
@@ -31,6 +32,23 @@ class TrajectoryStream:
         self._cached_index = None
         self._cached_shots = None
         self._permutation = None
+        self._shard = None
+        self._owner = ExitStack()
+        self._closed = False
+
+    def __enter__(self) -> "TrajectoryStream":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
+
+    def _release_chunk(self) -> None:
+        self._owner.close()
+        self._shard = self._cached_shots = self._cached_index = self._permutation = None
+
+    def close(self) -> None:
+        self._closed = True
+        self._release_chunk()
 
     def record(self) -> dict:
         return {
@@ -60,20 +78,25 @@ class TrajectoryStream:
 
     def seek(self, cursor: ChunkCursor) -> None:
         self.validate_cursor(cursor)
+        if cursor.chunk != self._cached_index:
+            self._release_chunk()
         self.cursor = cursor
 
     def _read_part(self, chunk: int, first: int, count: int) -> TrajectoryBatch:
         if chunk != self._cached_index:
+            self._release_chunk()
             _, rows = self.plan.chunk_bounds(chunk)
             rng = np.random.Generator(np.random.PCG64(self.plan.namespace.seed("trajectory_order", chunk)))
             permutation = rng.permutation(rows)
-            shots = sample_chunk(self.plan, self.bundle, chunk) if self.dataset is None else None
+            if self.dataset is None:
+                self._cached_shots = sample_chunk(self.plan, self.bundle, chunk)
+            else:
+                self._shard = self._owner.enter_context(self.dataset.open_shard(chunk))
             self._permutation = permutation
-            self._cached_shots = shots
             self._cached_index = chunk
         indices = self._permutation[first:first + count]
         if self.dataset is not None:
-            return self.dataset.shards[chunk].read(indices)
+            return self._shard.read(indices)
         source = self._cached_shots
         shots = ShotBatch(
             source.detectors[indices], source.global_labels[indices], source.core_labels[indices],
@@ -83,6 +106,15 @@ class TrajectoryStream:
         return TrajectoryBatch(shots, identities)
 
     def take(self, count: int) -> TrajectoryBatch:
+        if self._closed:
+            raise RuntimeError("trajectory stream is closed")
+        try:
+            return self._take(count)
+        except BaseException:
+            self._release_chunk()
+            raise
+
+    def _take(self, count: int) -> TrajectoryBatch:
         if type(count) is not int or count < 1:
             raise ValueError("a minibatch must contain a positive number of trajectories")
         stop = self.position + count
@@ -107,4 +139,6 @@ class TrajectoryStream:
                 ShotBatch(**arrays, snapshots=None), tuple(identity for piece in pieces for identity in piece.identities),
             )
         self.cursor = ChunkCursor(*divmod(stop, self.plan.chunk_rows))
+        if self.dataset is not None and (self.cursor.chunk != self._cached_index or stop == self.capacity):
+            self._release_chunk()
         return batch

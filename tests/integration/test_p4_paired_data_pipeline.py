@@ -13,6 +13,7 @@ from nn_window_ablation.features import attach_supervision, batch_features, buil
 from nn_window_ablation.models.gnn_rnn import QueryDecoder
 from nn_window_ablation.simulation import CircuitSpec, build_circuit_bundle
 from nn_window_ablation.windows import Buffers, build_observation_layout, select_window
+from tests.p4_checks import read_batch
 from tests.p3_checks import examples_for, model_inputs
 
 
@@ -26,7 +27,7 @@ def test_genuine_pilot_reloads_paired_observations_and_queries(tmp_path, compose
     mapped = open_dataset(manifest.parent, expected_split="test")
     direct_bundle = build_circuit_bundle(CircuitSpec(5, 60, 5, probability))
     assert mapped.bundle == direct_bundle
-    assert [(m.index, m.detectors.shape[0]) for m in mapped.shards] == [(0, 2), (1, 1)]
+    assert [(m.index, m.rows) for m in mapped.shards] == [(0, 2), (1, 1)]
     assert direct_bundle.spec.distance == 5 and direct_bundle.spec.rounds == 60
     torch.manual_seed(117)
     model = QueryDecoder(5).eval()
@@ -34,7 +35,7 @@ def test_genuine_pilot_reloads_paired_observations_and_queries(tmp_path, compose
     received = []
     for shard in mapped.shards:
         expected = sample_chunk(mapped.plan, direct_bundle, shard.index)
-        batch = shard.read()
+        batch = read_batch(mapped, shard.index)
         received.extend(batch.identities)
         assert batch.identities == tuple(
             TrajectoryID(mapped.plan.dataset_id, shard.index, row) for row in range(len(expected.shot_ids))
@@ -66,7 +67,7 @@ def test_genuine_pilot_reloads_paired_observations_and_queries(tmp_path, compose
     ids = np.load(payload, allow_pickle=False)
     np.save(payload, ids[::-1], allow_pickle=False)
     with pytest.raises(ArtifactError, match="size or checksum mismatch for shot_ids.npy"):
-        open_dataset(manifest.parent)
+        open_dataset(manifest.parent).verify_payloads()
 
 
 def test_workflows_train_from_finalized_train_shards_and_resume_in_place(tmp_path, compose_settings):

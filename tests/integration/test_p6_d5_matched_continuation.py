@@ -5,13 +5,13 @@ import numpy as np
 import pytest
 import torch
 
-from nn_window_ablation.artifacts import ArtifactError, write_json
+from nn_window_ablation.artifacts import ArtifactError, canonical_json, write_json
 from nn_window_ablation.checkpoints import load_checkpoint, load_evaluation_model
 from nn_window_ablation.data import SamplingPlan, open_dataset, sample_chunk
 from nn_window_ablation.execution import generate_workflow
 from nn_window_ablation.paired_workflows import analyze_workflow, evaluate_workflow
 from nn_window_ablation.simulation import CircuitSpec
-from tests.p4_checks import reference_seed
+from tests.p4_checks import read_batch, reference_seed
 from tests.p6_checks import ARMS, TEST_BUDGET, continuation_pilot, reference_model_hash, run_nnwa
 from tests.reference.p2_observations import PILOT_SCHEDULE
 
@@ -28,14 +28,17 @@ def test_p6_d5_matched_sweep_and_p5_comparisons(continuation_pilot, tmp_path):
     data = open_dataset(held.parent, expected_split="test")
     validation = open_dataset(valid.parent, expected_split="validation")
     assert data.plan.spec == CircuitSpec(5, 60, 5, 0.003)
-    np.testing.assert_array_equal(
-        data.shards[0].read().shots.global_labels, np.logical_xor.reduce(data.shards[0].read().shots.core_labels, axis=1),
-    )
+    rows = read_batch(data, 0).shots
+    np.testing.assert_array_equal(rows.global_labels, np.logical_xor.reduce(rows.core_labels, axis=1))
 
+    generate_workflow(resolve(
+        "data.split=train", "training=continued_full", "data.id=continuation", "data.shots=5", "data.shard_shots=3",
+    ))
     run_nnwa(
         tmp_path, "train", "--multirun", "runtime=test_cpu", "run_name=matched",
         f"training={','.join(ARMS)}", "checkpoint.init_from=runs/base/checkpoint.pt",
-        "training.max_steps=2", "training.validation_data_id=val", *TEST_BUDGET,
+        "training.max_steps=2", "training.validation_data_id=val", "checkpoint.save_every_updates=3",
+        "data.train_source=stored_shards", "data.id=continuation", *TEST_BUDGET,
     )
     audits, predictions = [], []
     for index, (arm, condition) in enumerate(zip(ARMS, ("S+", "W", "D"), strict=True)):
@@ -104,7 +107,7 @@ def test_p6_d5_matched_sweep_and_p5_comparisons(continuation_pilot, tmp_path):
     plan = SamplingPlan.from_record(audits[0]["controls"]["trainer"]["source"]["plan"])
     expected_order = [
         (chunk, int(row)) for chunk in range(2)
-        for row in np.random.default_rng(reference_seed(plan.namespace, "trajectory_order", chunk)).permutation(3)
+        for row in np.random.default_rng(reference_seed(plan.namespace, "trajectory_order", chunk)).permutation(plan.chunk_bounds(chunk)[1])
     ][:4]
     expected_cores = np.random.default_rng(reference_seed(plan.namespace, "core_query")).integers(0, 12, size=4).tolist()
     for audit in audits:
@@ -129,6 +132,8 @@ def test_p6_d5_matched_sweep_and_p5_comparisons(continuation_pilot, tmp_path):
 
     changed = json.loads(predictions[-1].read_text())
     changed["conditions"]["S"]["checkpoint"]["continuation_input_sha256"] = "3" * 64
+    changed["contract"]["conditions"] = changed["conditions"]
+    changed["contract_sha256"] = sha256(canonical_json(changed["contract"])).hexdigest()
     write_json(predictions[-1], changed)
     with pytest.raises(ArtifactError, match="matched initialization, controls, and trajectory/core draws"):
         analyze_workflow(resolve("run_name=unmatched", *options))

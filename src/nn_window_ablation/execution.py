@@ -1,13 +1,12 @@
 """Dataset and training workflows over resolved configuration and explicit paths."""
 
-from contextlib import contextmanager
-import fcntl
 from hashlib import sha256
 from pathlib import Path
+import re
 import resource
 from time import perf_counter, process_time
 
-from .artifacts import ArtifactError, file_integrity, verify_file, write_json
+from .artifacts import ArtifactError, exclusive_lock, file_integrity, verify_file, write_json
 from .config import ConfigError, ResolvedConfig, require_execution_config, validate_run_name
 from .continuation import CONTINUATION_ARMS, TRAINING_REGIMES
 from .runtime import configure_cpu_runtime
@@ -186,11 +185,12 @@ def _terminal_validation(trainer, objective, mapped) -> dict:
     evaluator = FrozenEvaluator(trainer.model, mapped.bundle, objective.fixed_buffers)
     failures = 0
     batch_size = trainer.budget.microbatch_size
-    for shard in mapped.shards:
-        for start in range(0, len(shard.shot_ids), batch_size):
-            shots = shard.read(slice(start, start + batch_size)).shots
-            predictions = evaluator.logits("S", shots.detectors, shots.shot_ids) >= 0
-            failures += int(np.count_nonzero(compose_core_decisions(predictions) ^ shots.global_labels))
+    for descriptor in mapped.shards:
+        with mapped.open_shard(descriptor.index) as shard:
+            for start in range(0, shard.rows, batch_size):
+                shots = shard.read(slice(start, start + batch_size)).shots
+                predictions = evaluator.logits("S", shots.detectors, shots.shot_ids) >= 0
+                failures += int(np.count_nonzero(compose_core_decisions(predictions) ^ shots.global_labels))
     if model_state_sha256(trainer.model) != before:
         raise ArtifactError("terminal validation changed model parameters or buffers")
     return {
@@ -225,16 +225,6 @@ def _package_source_sha256(root: Path | None = None) -> str:
     return digest.hexdigest()
 
 
-@contextmanager
-def _training_lock(path: Path):
-    with (path / ".training.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ArtifactError("another process is updating the selected training run") from exc
-        yield
-
-
 def train_workflow(
     config: ResolvedConfig, *, overrides: tuple[str, ...] = (), sweep_index: int | None = None,
     stop_after: int | None = None,
@@ -256,6 +246,11 @@ def train_workflow(
 def _run_training(
     config: ResolvedConfig, *, overrides: tuple[str, ...], sweep_index: int | None, stop_after: int | None,
 ) -> Path:
+    with _training_stream(config) as stream:
+        return _train_stream(config, stream, overrides=overrides, sweep_index=sweep_index, stop_after=stop_after)
+
+
+def _train_stream(config, stream, *, overrides, sweep_index, stop_after) -> Path:
     import torch
 
     from .checkpoints import load_checkpoint
@@ -268,7 +263,6 @@ def _run_training(
     if type(stop) is not int or not 0 <= stop <= settings.max_steps:
         raise ConfigError("pause must be within the declared phase update budget")
     budget = UpdateBudget(settings.max_steps, settings.batch_size, settings.microbatch_size or settings.batch_size)
-    stream = _training_stream(config)
     validation = _validation_dataset(config, stream.plan)
     model = fresh_decoder(stream.plan)
     optimizer_type = torch.optim.Adam if settings.optimizer == "adam" else torch.optim.SGD
@@ -309,14 +303,20 @@ def _run_training(
     checkpoint = directory / "checkpoint.pt"
     audit = None
 
-    with _training_lock(directory):
+    with exclusive_lock(directory / ".training.lock", "training"):
+        for entry in directory.iterdir():
+            if re.fullmatch(r"\.(?:checkpoint\.pt|run\.json)\.[a-z0-9_]{8}", entry.name) and entry.is_file():
+                entry.unlink()
         if resume is not None:
             state = load_checkpoint(resume)
             run = state.get("run", {})
+            if run.get("replay_environment") != _resume_environment(environment):
+                raise ArtifactError(
+                    "checkpoint resume environment or source differs; use the original checkout and environment for exact replay"
+                )
             if (
                 run.get("directory") != relative.as_posix()
                 or run.get("resume_contract") != _resume_contract(declared)
-                or run.get("replay_environment") != _resume_environment(environment)
             ):
                 raise ArtifactError("checkpoint belongs to another run, resolved configuration, or environment")
             trainer.restore(state)
@@ -347,6 +347,7 @@ def _run_training(
         write_json(directory / "run.json", {
             "schema_version": 1, "status": "running", "counters": trainer.counters, "run": run,
         })
+        cadence = config.checkpoint.save_every_updates
         while trainer.phase_updates < stop:
             wall, cpu = perf_counter(), process_time()
             trace = trainer.step(objective)
@@ -357,7 +358,9 @@ def _run_training(
                     rss=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
                     allocated_cpus=config.runtime.allocated_cpus,
                 )
-            _save_training_checkpoint(checkpoint, trainer, run, audit)
+            if trace.update == stop or (cadence is not None and trace.update % cadence == 0):
+                _save_training_checkpoint(checkpoint, trainer, run, audit)
+        stream.close()
         if validation is not None and trainer.complete and audit["validation"] is None:
             audit["validation"] = _terminal_validation(trainer, objective, validation)
             _save_training_checkpoint(checkpoint, trainer, run, audit)

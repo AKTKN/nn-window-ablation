@@ -1,17 +1,23 @@
 """Publish and verify paired predictions and whole-trajectory analysis records."""
 
 from dataclasses import asdict
+from hashlib import sha256
 from io import StringIO
 from pathlib import Path
 import csv
+import re
+import shutil
 
-from .artifacts import ArtifactError, atomic_file, file_integrity, read_json, staged_directory, verify_file, write_json
+from .artifacts import (
+    ArtifactError, _sync_directory, atomic_file, canonical_json, exclusive_lock, file_integrity, publish_directory,
+    read_json, read_json_artifact, staged_directory, verify_file, write_json,
+)
 from .config import ConfigError, ResolvedConfig, require_execution_config, validate_run_name
 from .runtime import configure_cpu_runtime, runtime_observation
 from .workflows import _environment_record
 
 
-PREDICTION_SCHEMA = 1
+PREDICTION_SCHEMA = 2
 PRIMARY_CONTRASTS = ("S_minus_G", "F_minus_G", "S_minus_F")
 EVALUATION_PRESETS = {
     "G": ("global", "full_closed", "identity"),
@@ -111,11 +117,12 @@ def evaluate_workflow(
 ) -> Path:
     check_paired_execution("evaluate", config)
     configure_cpu_runtime(config.runtime, config.data)
-    import numpy as np
     import stim
+    import torch
 
     from .checkpoints import load_checkpoint
-    from .evaluation import CheckpointProvenance, FrozenEvaluator, MatchingReference, compose_core_decisions, model_state_sha256
+    from .evaluation import CheckpointProvenance, FrozenEvaluator, MatchingReference, model_state_sha256
+    from .execution import _package_source_sha256, _resume_environment
     from .models.gnn_rnn import QueryDecoder
     from .windows import Buffers
 
@@ -155,63 +162,220 @@ def evaluate_workflow(
             },
         }
     destination = _run_path(config, sweep_index)
-    with staged_directory(destination) as staging:
+    request = _evaluation_request(config.to_record())
+    environment = {**_environment_record(), "package_source_sha256": _package_source_sha256()}
+    runtime = {
+        **runtime_observation(config.data),
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+        "deterministic_warn_only": torch.is_deterministic_algorithms_warn_only_enabled(),
+        "float32_matmul_precision": torch.get_float32_matmul_precision(),
+        "mkldnn_enabled": torch.backends.mkldnn.enabled,
+    }
+    semantic = {
+        "prediction_schema": PREDICTION_SCHEMA, "data": _dataset_record(mapped), "conditions": conditions,
+        "request": request, "checkpoint": receipt, "runtime": runtime, "environment": _resume_environment(environment),
+    }
+    contract = {
+        "schema_version": 1, "semantic": semantic, "resolved_config": config.to_record(),
+        "overrides": list(overrides), "environment": environment,
+    }
+    if not settings.resume:
+        destination.mkdir()
+        _sync_directory(destination.parent)
+    elif not destination.is_dir() or destination.is_symlink():
+        raise ArtifactError("evaluation resume requires the original run directory")
+
+    with exclusive_lock(destination / ".evaluation.lock", "evaluation"):
+        shards_dir = destination / "shards"
+        if shards_dir.is_symlink():
+            raise ArtifactError("evaluation shard root must be an owned directory")
+        contract_path = destination / "contract.json"
+        final_path = destination / "manifest.json"
+        _clean_evaluation_json_temps(destination)
+        if contract_path.exists():
+            saved = read_json(contract_path)
+            if saved.get("schema_version") != 1 or saved.get("semantic") != semantic:
+                raise ArtifactError("evaluation resume contract differs from the requested data, model, policy, or environment")
+            contract = saved
+        else:
+            if final_path.exists() or set(p.name for p in destination.iterdir()) - {".evaluation.lock", "shards"} or (
+                shards_dir.exists() and any(shards_dir.iterdir())
+            ):
+                raise ArtifactError("evaluation run lacks a valid resumable contract; use a new run name for legacy results")
+            write_json(contract_path, contract)
+        shards_dir.mkdir(exist_ok=True)
+        _sync_directory(destination)
+        final_exists = final_path.exists()
+        sealed = _read_manifest(final_path, mapped) if final_exists else None
+        if sealed is not None and sealed.get("contract") != semantic:
+            raise ArtifactError("completed evaluation manifest differs from the resumable contract")
+        committed = _evaluation_inventory(shards_dir, len(mapped.shards))
+        digest = _semantic_digest(semantic)
         inventory = []
-        (staging / "shards").mkdir()
-        for shard in mapped.shards:
-            shard_dir = staging / "shards" / str(shard.index)
-            shard_dir.mkdir(parents=True)
-            count = len(shard.shot_ids)
-            logits = {mode: np.empty((count, len(evaluator.views(mode))), dtype=np.float32) for mode in modes}
-            baselines = np.empty((count, 1), dtype=bool) if matching is not None else None
-            for start in range(0, count, settings.batch_size):
-                rows = slice(start, min(count, start + settings.batch_size))
-                shots = shard.read(rows).shots
-                for mode in modes:
-                    logits[mode][rows] = evaluator.logits(mode, shots.detectors, shots.shot_ids)
-                if matching is not None:
-                    baselines[rows] = matching.decisions(shots.detectors)
-            files = {"shot_ids.npy": _write_array(shard_dir / "shot_ids.npy", shard.shot_ids)}
-            decisions = {mode: scores >= 0 for mode, scores in logits.items()}
-            if matching is not None:
-                decisions["MWPM"] = baselines
-            for mode, bits in decisions.items():
-                name = f"{mode}.decisions.npy"
-                files[name] = {
-                    **_write_array(shard_dir / name, np.packbits(bits, axis=1, bitorder="little")),
-                    "valid_bits": bits.shape[1],
-                }
-                if mode in logits:
-                    name = f"{mode}.logits.npy"
-                    files[name] = _write_array(shard_dir / name, logits[mode])
-                if mode in ("F", "S"):
-                    name = f"{mode}.final.npy"
-                    final = compose_core_decisions(bits).astype(np.uint8)[:, None]
-                    files[name] = {**_write_array(shard_dir / name, final), "valid_bits": 1}
-            inventory.append({"index": shard.index, "rows": count, "files": files})
+        for descriptor in mapped.shards:
+            index = descriptor.index
+            target = shards_dir / str(index)
+            with mapped.open_shard(index) as shard:
+                if index in committed:
+                    entry = _verify_commit(target, descriptor, shard, conditions, digest)
+                    if sealed is not None and sealed["shards"][index] != entry:
+                        raise ArtifactError("completed evaluation inventory differs from its shard receipt")
+                elif final_exists:
+                    raise ArtifactError(f"completed evaluation is missing shard {index}")
+                else:
+                    entry = _evaluate_shard(
+                        target, descriptor, shard, evaluator, modes, matching, settings.batch_size, digest,
+                    )
+            inventory.append(entry)
         if model_state_sha256(model) != state_digest:
             raise ArtifactError("frozen evaluation changed model parameters or buffers")
-        write_json(staging / "manifest.json", {
-            "schema_version": PREDICTION_SCHEMA, "status": "complete", "data": _dataset_record(mapped),
-            "conditions": conditions, "shards": inventory, "resolved_config": config.to_record(),
-            "overrides": list(overrides), "environment": _environment_record(), "runtime": runtime_observation(config.data),
-        })
-    return destination / "manifest.json"
+        if not final_exists:
+            _sync_directory(shards_dir)
+            write_json(final_path, {
+                "schema_version": PREDICTION_SCHEMA, "status": "complete", "data": semantic["data"],
+                "conditions": conditions, "shards": inventory, "resolved_config": contract["resolved_config"],
+                "overrides": contract["overrides"], "environment": contract["environment"], "runtime": runtime,
+                "contract": semantic, "contract_sha256": digest,
+            })
+    return final_path
+
+
+def _semantic_digest(record: dict) -> str:
+    return sha256(canonical_json(record)).hexdigest()
+
+
+def _evaluation_request(resolved: dict) -> dict:
+    return {
+        **{key: resolved[key] for key in ("code", "noise", "window", "model", "geometry", "runtime")},
+        "execution": {key: resolved["data"][key] for key in ("num_workers", "sampling_processes")},
+        "evaluation": {key: value for key, value in resolved["evaluation"].items() if key != "resume"},
+    }
+
+
+def _clean_evaluation_json_temps(directory: Path) -> None:
+    for path in directory.iterdir():
+        if re.fullmatch(r"\.(?:contract|manifest)\.json\.[a-z0-9_]{8}", path.name) and path.is_file():
+            path.unlink()
+
+
+def _evaluation_inventory(root: Path, count: int) -> set[int]:
+    pending = root / ".pending"
+    if pending.is_symlink() or (pending.exists() and not pending.is_dir()):
+        raise ArtifactError("invalid temporary evaluation shard directory")
+    if pending.is_dir():
+        shutil.rmtree(pending)
+    indices = set()
+    for path in root.iterdir():
+        if not path.is_dir() or path.is_symlink() or not re.fullmatch(r"0|[1-9][0-9]*", path.name):
+            raise ArtifactError("unexpected evaluation shard directory")
+        index = int(path.name)
+        if index >= count:
+            raise ArtifactError("out-of-range evaluation shard directory")
+        indices.add(index)
+    if indices != set(range(len(indices))):
+        raise ArtifactError("evaluation shard inventory is missing an earlier committed index")
+    return indices
+
+
+def _verify_commit(directory, descriptor, shard, conditions, digest) -> dict:
+    receipt = read_json(directory / "receipt.json")
+    if (
+        receipt.get("schema_version") != 1 or receipt.get("contract_sha256") != digest
+        or receipt.get("source") != descriptor.source_record()
+    ):
+        raise ArtifactError(f"committed evaluation shard {descriptor.index} has incompatible source or run identity")
+    entry = {key: value for key, value in receipt.items() if key not in ("schema_version", "contract_sha256")}
+    _verify_prediction_files(directory, entry, shard, conditions, committed=True)
+    return entry
+
+
+def _verify_prediction_files(directory, entry, shard, conditions, *, committed: bool) -> None:
+    expected = set(entry.get("files", {}))
+    if committed:
+        expected.add("receipt.json")
+    if {path.name for path in directory.iterdir()} != expected:
+        raise ArtifactError(f"missing or unexpected prediction payloads for shard {shard.index}")
+    for _ in _read_prediction_shard(directory, entry, shard, conditions):
+        pass
+
+
+def _evaluate_shard(target, descriptor, shard, evaluator, modes, matching, batch_size, digest) -> dict:
+    import numpy as np
+
+    from .evaluation import compose_core_decisions
+
+    pending = target.parent / ".pending"
+    pending.mkdir()
+    try:
+        count = shard.rows
+        logits = {mode: np.empty((count, len(evaluator.views(mode))), dtype=np.float32) for mode in modes}
+        baselines = np.empty((count, 1), dtype=bool) if matching is not None else None
+        for start in range(0, count, batch_size):
+            rows = slice(start, min(count, start + batch_size))
+            shots = shard.read(rows).shots
+            for mode in modes:
+                logits[mode][rows] = evaluator.logits(mode, shots.detectors, shots.shot_ids)
+            if matching is not None:
+                baselines[rows] = matching.decisions(shots.detectors)
+        files = {"shot_ids.npy": _write_array(pending / "shot_ids.npy", shard.shot_ids)}
+        decisions = {mode: scores >= 0 for mode, scores in logits.items()}
+        if matching is not None:
+            decisions["MWPM"] = baselines
+        for mode, bits in decisions.items():
+            files[f"{mode}.decisions.npy"] = {
+                **_write_array(pending / f"{mode}.decisions.npy", np.packbits(bits, axis=1, bitorder="little")),
+                "valid_bits": bits.shape[1],
+            }
+            if mode in logits:
+                files[f"{mode}.logits.npy"] = _write_array(pending / f"{mode}.logits.npy", logits[mode])
+            if mode in ("F", "S"):
+                final = compose_core_decisions(bits).astype(np.uint8)[:, None]
+                files[f"{mode}.final.npy"] = {**_write_array(pending / f"{mode}.final.npy", final), "valid_bits": 1}
+        entry = {"index": descriptor.index, "rows": count, "files": files, "source": descriptor.source_record()}
+        _verify_prediction_files(pending, entry, shard, {mode: {"condition": mode} for mode in decisions}, committed=False)
+        write_json(pending / "receipt.json", {"schema_version": 1, "contract_sha256": digest, **entry})
+        publish_directory(pending, target)
+        return entry
+    finally:
+        if pending.is_dir():
+            shutil.rmtree(pending)
 
 
 def _read_manifest(path: Path, mapped, *, verify_queries: bool = True) -> dict:
+    return _validate_manifest(read_json(path), mapped, verify_queries=verify_queries)
+
+
+def _validate_manifest(record: dict, mapped, *, verify_queries: bool = True) -> dict:
     from .continuation import is_digest
     from .evaluation import CheckpointProvenance
     from .windows import Buffers, build_observation_layout, select_window
 
-    record = read_json(path)
-    if record.get("schema_version") != PREDICTION_SCHEMA or record.get("status") != "complete":
+    schema = record.get("schema_version")
+    if (type(schema) is not int or schema not in (1, PREDICTION_SCHEMA)
+            or record.get("status") != "complete"):
         raise ArtifactError("incomplete or incompatible prediction manifest")
     if record.get("data") != _dataset_record(mapped):
         raise ArtifactError("prediction dataset identity or label/feature schema differs from the selected dataset")
     try:
         if len(record["shards"]) != len(mapped.shards) or not record["conditions"]:
             raise ArtifactError("prediction manifest is missing shards or conditions")
+        if schema == 1 and {"contract", "contract_sha256"} & record.keys():
+            raise ArtifactError("incompatible prediction manifest mixes legacy and resumable schemas")
+        if schema == PREDICTION_SCHEMA:
+            semantic = record["contract"]
+            if (
+                record["contract_sha256"] != _semantic_digest(semantic)
+                or semantic["prediction_schema"] != PREDICTION_SCHEMA
+                or any(semantic[key] != record[key] for key in ("data", "conditions", "runtime"))
+                or semantic["request"] != _evaluation_request(record["resolved_config"])
+            ):
+                raise ArtifactError("prediction manifest has an incompatible semantic contract")
+            for descriptor, entry in zip(mapped.shards, record["shards"], strict=True):
+                if (
+                    (descriptor.index, descriptor.rows) != (entry["index"], entry["rows"])
+                    or entry["source"] != descriptor.source_record()
+                ):
+                    raise ArtifactError("prediction manifest has incompatible source shard identity or coverage")
         resolved = record["resolved_config"]
         settings = resolved["evaluation"]
         expected_modes = set("GFS") if settings["id"] == "paired" else {settings["id"]}
@@ -259,32 +423,44 @@ def _read_manifest(path: Path, mapped, *, verify_queries: bool = True) -> dict:
 
 
 def _read_array(path: Path, entry: dict, *, dtype: str, shape: tuple):
-    import numpy as np
+    from .data import ArrayDescriptor, _map_array
 
-    verify_file(path, {key: entry[key] for key in ("bytes", "sha256")})
-    array = np.load(path, mmap_mode="r", allow_pickle=False)
-    if array.dtype != np.dtype(dtype) or array.shape != shape or entry["dtype"] != dtype or entry["shape"] != list(shape):
+    if entry["dtype"] != dtype or entry["shape"] != list(shape):
         raise ArtifactError(f"prediction array dimensions or dtype differ for {path.name}")
-    return array
+    spec = ArrayDescriptor(path.name, path, shape, dtype, None, entry["bytes"], entry["sha256"])
+    with _map_array(spec) as array:
+        return array.copy()
 
 
 def _read_shard(path: Path, record: dict, shard):
+    entry = record["shards"][shard.index]
+    yield from _read_prediction_shard(path.parent / "shards" / str(shard.index), entry, shard, record["conditions"])
+
+
+def _read_prediction_shard(directory, entry, shard, conditions):
     import numpy as np
 
     from .analysis import require_paired_ids
     from .evaluation import compose_core_decisions
 
     try:
-        entry = record["shards"][shard.index]
-        row_count = len(shard.shot_ids)
+        row_count = shard.rows
         if (entry["index"], entry["rows"]) != (shard.index, row_count):
             raise ArtifactError("missing, duplicated or reordered prediction shards")
         files = entry["files"]
-        directory = path.parent / "shards" / str(shard.index)
+        expected = {"shot_ids.npy"}
+        for mode in conditions:
+            expected.add(f"{mode}.decisions.npy")
+            if mode != "MWPM":
+                expected.add(f"{mode}.logits.npy")
+            if mode in ("F", "S"):
+                expected.add(f"{mode}.final.npy")
+        if set(files) != expected:
+            raise ArtifactError("prediction inventory differs from the declared modes")
         ids = _read_array(directory / "shot_ids.npy", files["shot_ids.npy"], dtype="int64", shape=(row_count,))
         require_paired_ids(shard.shot_ids, ids)
-        for mode, condition in record["conditions"].items():
-            width = record["data"]["core_count"] if mode in ("F", "S") else 1
+        for mode, condition in conditions.items():
+            width = shard.plan.core_count if mode in ("F", "S") else 1
             name = f"{mode}.decisions.npy"
             packed = _read_array(directory / name, files[name], dtype="uint8", shape=(row_count, (width + 7) // 8))
             if files[name]["valid_bits"] != width or (width % 8 and np.any(packed[:, -1] >> (width % 8))):
@@ -363,8 +539,6 @@ def summarize_predictions(mapped, inputs: list[tuple[Path, dict, dict]], policy,
     from .analysis import (
         CoreDiagnostics, PairedCounts, _count_pairs, binomial_interval, core_disagreements, summarize_pair,
     )
-    from .evaluation import compose_core_decisions
-
     shots = mapped.plan.total_rows
     conditions = {}
     for _, manifest, _ in inputs:
@@ -378,26 +552,25 @@ def summarize_predictions(mapped, inputs: list[tuple[Path, dict, dict]], policy,
     failures = dict.fromkeys(conditions, 0)
     losses = {label: np.zeros(12 if label in core else 1) for label, entry in conditions.items() if entry["mode"] != "MWPM"}
     paired = {name: np.zeros(4, dtype=np.int64) for name, _, _ in comparisons}
-    for shard in mapped.shards:
-        labels = np.unpackbits(shard.global_labels, axis=1, count=1, bitorder="little").astype(bool)
-        core_labels = np.unpackbits(shard.core_labels, axis=1, count=12, bitorder="little").astype(bool)
-        if not np.array_equal(compose_core_decisions(core_labels), labels[:, 0]):
-            raise ArtifactError("dataset core parity differs from global labels")
-        shard_failures = {}
-        for path, manifest, _ in inputs:
-            for condition, decisions, scores, final in _read_shard(path, manifest, shard):
-                target = labels
-                if condition in core:
-                    core[condition].add(core_disagreements(decisions, core_labels, labels[:, 0]))
-                    target = core_labels
-                error = final ^ labels[:, 0]
-                shard_failures[condition] = error
-                failures[condition] += int(error.sum())
-                if scores is not None:
-                    signed = np.where(target, -scores, scores).astype(np.float64)
-                    losses[condition] += np.logaddexp(0, signed).sum(axis=0)
-        for name, first, second in comparisons:
-            paired[name] += _count_pairs(shard_failures[first], shard_failures[second]).categories
+    for descriptor in mapped.shards:
+        with mapped.open_shard(descriptor.index, labels_only=True) as shard:
+            global_labels, core_labels = shard.read_labels()
+            labels = global_labels[:, None]
+            shard_failures = {}
+            for path, manifest, _ in inputs:
+                for condition, decisions, scores, final in _read_shard(path, manifest, shard):
+                    target = labels
+                    if condition in core:
+                        core[condition].add(core_disagreements(decisions, core_labels, labels[:, 0]))
+                        target = core_labels
+                    error = final ^ labels[:, 0]
+                    shard_failures[condition] = error
+                    failures[condition] += int(error.sum())
+                    if scores is not None:
+                        signed = np.where(target, -scores, scores).astype(np.float64)
+                        losses[condition] += np.logaddexp(0, signed).sum(axis=0)
+            for name, first, second in comparisons:
+                paired[name] += _count_pairs(shard_failures[first], shard_failures[second]).categories
 
     for path, _, receipt in inputs:
         verify_file(path, receipt)
@@ -462,8 +635,8 @@ def analyze_workflow(
     inputs = []
     for name in settings.predictions:
         path = Path(name)
-        receipt = file_integrity(path)
-        inputs.append((path, _read_manifest(path, mapped), receipt))
+        record, receipt = read_json_artifact(path)
+        inputs.append((path, _validate_manifest(record, mapped), receipt))
     summary = summarize_predictions(mapped, inputs, policy, settings.contrasts)
     destination = _run_path(config, sweep_index)
     with staged_directory(destination) as staging:
