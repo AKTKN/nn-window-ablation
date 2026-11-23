@@ -57,6 +57,34 @@ not a required training stage or the pilot.
 
 ## Validation record
 
+### Local cluster script relocation
+
+The Git-ignored `cluster/scripts/` copy now invokes its own shared shell
+runner, Python launcher and stage YAML files. Its Japanese guide uses the
+relocated submission and configuration paths. Shared YAML references remain
+relative to each stage YAML. The cluster copy now defaults to
+`./cluster/data` and `./cluster/runs`, resolved from the repository root;
+its five jobs and three PBS examples write scheduler output under
+`cluster/logs/`. The tracked `scripts/pbs/` templates are unchanged.
+
+All six copied shell files and three PBS examples passed `bash -n`. In
+`nn_window_decoding`, all five relocated YAML configurations passed workflow
+preflight, including dataset, checkpoint and prediction linkage checks.
+Local dispatch checks exercised all five shell entry points with a simulated
+`PBS_O_WORKDIR`, actual Conda activation and the relocated Python/YAML files;
+the final `nnwa` exec was captured without running the production commands.
+Local analysis dispatch, a custom configuration path containing spaces,
+relative shared-YAML lookup, wrong-stage rejection and README links also
+passed. Git ignore checks confirmed the copied shells and YAML remain ignored.
+No scheduler submission or allocated-node execution was performed.
+
+After relocating output roots, all five workflow preflights passed again.
+Resolved data/run paths, checkpoint and prediction links were checked under
+`cluster/`; all six shell files and three examples passed syntax checks,
+and their scheduler output paths resolve inside the existing `cluster/logs/`
+directory. The updated README links passed as well. This verification did
+not generate experimental datasets or run training.
+
 ### PBS stage scripts with YAML arguments
 
 The [Japanese PBS guide](scripts/pbs/README.md) links separate train/test
@@ -323,6 +351,25 @@ Both reported zero failures and skips. The test IDs are in
 These checks established the shared test setup before P0. The phase records
 above provide subsequent acceptance evidence. Allocated compute-node
 checks remain pending.
+
+## Cluster staging-cleanup investigation (2026-11-23 JST)
+
+Read-only inspection found `Errno 39: Directory not empty` in
+`cluster/logs/sample_train.e`, `sample_test.e`, and `evaluate.e`. Generation
+and evaluation both call `artifacts.retire_staging`, which opens and exclusively
+locks `writers.lock` before calling `shutil.rmtree` while that file is still
+open. Evaluation logs record all 40 shard commits followed by cleanup failure;
+the final evaluation manifest is absent. The failed staging directories are
+now empty. These are log and filesystem observations, not scientific tests.
+
+The leading explanation is NFS silly-renaming of the open lease during removal.
+The login host sees `/home` on XFS and exports it over NFS to the compute-node
+network in `/etc/exports`. The compute-node mount and failure-time `.nfs*`
+entry have not been observed directly: read-only SSH to CPUcluster041, where
+the user's job 264508 is running, failed authentication. No diagnostic job was
+submitted, reproduction executed, or cleanup implementation changed. A fix
+must preserve worker exclusion while removing the open lease from the directory
+being deleted, and needs verification on an allocated compute node.
 
 ## Decisions retained for the pilot
 
