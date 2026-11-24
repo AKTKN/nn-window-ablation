@@ -69,6 +69,27 @@ def _assert_same_state(actual, expected):
         assert_exact(actual["continuation_audit"][key], expected["continuation_audit"][key])
 
 
+@pytest.mark.parametrize("pause", [1, 3])
+def test_learning_rate_floor_survives_continuation_resume(cheap_training, pause):
+    schedule = "training.scheduler_gamma=0.2"
+    reference = load_checkpoint(execution.train_workflow(cheap_training("reference", schedule)))
+    path = execution.train_workflow(cheap_training("pause", schedule), stop_after=0)
+    initial = load_checkpoint(path)
+    assert initial["optimizer_state"]["param_groups"][0]["lr"] == 0.01
+    assert initial["scheduler_state"]["base_lrs"] == [0.01]
+
+    execution.train_workflow(cheap_training("pause", schedule, resume=True), stop_after=pause)
+    partial = load_checkpoint(path)
+    expected_rate = 0.002 if pause == 1 else 0.001
+    assert partial["optimizer_state"]["param_groups"][0]["lr"] == expected_rate
+    assert partial["scheduler_state"]["_last_lr"] == [expected_rate]
+    execution.train_workflow(cheap_training("pause", schedule, resume=True))
+    resumed = load_checkpoint(path)
+    assert resumed["optimizer_state"]["param_groups"][0]["lr"] == 0.001
+    assert resumed["scheduler_state"]["_last_lr"] == [0.001]
+    _assert_same_state(resumed, reference)
+
+
 def test_sampled_update_logging_preserves_resume_and_checkpoint_state(cheap_training):
     reference = execution.train_workflow(cheap_training("reference"))
     reference_log, = reference.parent.glob("train-attempts/*/rank-0.jsonl")

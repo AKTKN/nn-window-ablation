@@ -175,6 +175,22 @@ def _counters(budget: UpdateBudget, parent: int, local: int) -> dict[str, int]:
     }
 
 
+class ClippedStepLR(torch.optim.lr_scheduler.StepLR):
+    """Step decay clipped to 10% of each parameter group's initial learning rate."""
+
+    def _clip_lrs(self, learning_rates: list[float]) -> list[float]:
+        return [
+            max(rate, 0.1 * initial)
+            for rate, initial in zip(learning_rates, self.base_lrs, strict=True)
+        ]
+
+    def get_lr(self) -> list[float]:
+        return self._clip_lrs(super().get_lr())
+
+    def _get_closed_form_lr(self) -> list[float]:
+        return self._clip_lrs(super()._get_closed_form_lr())
+
+
 class Trainer:
     def __init__(
         self, model: nn.Module, optimizer: torch.optim.Optimizer,

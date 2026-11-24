@@ -363,7 +363,7 @@ def _train_stream(config, stream, *, overrides, sweep_index, stop_after, startup
 
     from .checkpoints import load_checkpoint
     from .continuation import checked_audit, model_tensors_sha256, record_update, start_audit
-    from .training import MemoryObjective, Trainer, UpdateBudget, distributed_state, fresh_decoder
+    from .training import ClippedStepLR, MemoryObjective, Trainer, UpdateBudget, distributed_state, fresh_decoder
     from .windows import Buffers, buffer_lengths
 
     settings = config.training
@@ -376,7 +376,7 @@ def _train_stream(config, stream, *, overrides, sweep_index, stop_after, startup
     optimizer_type = torch.optim.Adam if settings.optimizer == "adam" else torch.optim.SGD
     optimizer = optimizer_type(model.parameters(), lr=settings.learning_rate, foreach=False)
     scheduler = (
-        torch.optim.lr_scheduler.StepLR(optimizer, settings.scheduler_step_size, gamma=settings.scheduler_gamma)
+        ClippedStepLR(optimizer, settings.scheduler_step_size, gamma=settings.scheduler_gamma)
         if settings.scheduler == "step" else None
     )
     choices = buffer_lengths(config.geometry.distance) if settings.dynamic_buffers.enabled else None

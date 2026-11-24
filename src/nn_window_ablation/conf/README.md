@@ -41,6 +41,9 @@ made. `validate` accepts unresolved budgets for inspection. `generate` requires
 complete trajectories. `train` accepts `training.optimizer=sgd` or `adam` and
 `training.scheduler=none` or `step`. The `step` scheduler requires
 `training.scheduler_step_size` in updates and `training.scheduler_gamma`.
+The `step` scheduler clips the learning rate at 10% of the initial `training.learning_rate`
+(for example, `0.001` decays no lower than `0.0001`). Checkpoint resume retains
+this initial-rate reference; each new continuation phase starts its own schedule.
 `training.batch_size` is the effective trajectory count per update, and
 `training.microbatch_size` defaults to the batch size local to each rank.
 

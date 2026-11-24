@@ -57,6 +57,29 @@ not a required training stage or the pilot.
 
 ## Validation record
 
+### Training learning-rate floor
+
+The shared inline/CPU-DDP training setup now uses `ClippedStepLR` for
+`training.scheduler=step`. It clips each parameter group's learning rate at
+0.1 times its initial rate, so `training.learning_rate=0.001` has a floor of
+`0.0001`. The scheduler retains its initial-rate reference in `base_lrs`,
+records the clipped rate, and starts a fresh schedule for each continuation.
+
+Local checks used `conda run --no-capture-output -n nn_window_decoding python
+-m pytest -q` with Python 3.11.18 and PyTorch 2.7.0+cpu. The scheduler and
+reliability-checkpoint suites passed 23 tests (two process-resource cases
+deselected). These checks cover SGD/Adam updates, different initial rates,
+decay cadence, parameter-group floors, and exact continuation replay from
+pauses before and after reaching the floor. The five scheduler tests also
+passed after adding coverage for explicit-epoch scheduling.
+
+Another 17 P4/P6 update, checkpoint, fork, objective, budget and distance-5
+integration tests passed. The genuine distance-5 serial/one-rank/two-rank
+CPU/Gloo comparison passed separately, including gradients, optimizer state,
+checkpoint evaluation and retained 256-wide/four-layer model capacity.
+`git diff --check` passed. Allocated-node validation remains pending; no
+cluster job was submitted.
+
 ### Local cluster script relocation
 
 The Git-ignored `cluster/scripts/` copy now invokes its own shared shell
